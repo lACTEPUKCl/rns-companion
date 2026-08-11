@@ -67,7 +67,8 @@
 
     <Style x:Key="SectionTitle" TargetType="TextBlock" BasedOn="{StaticResource BaseText}">
       <Setter Property="Foreground" Value="{StaticResource Text2}"/>
-      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontDisplay}"/>
+      <Setter Property="FontSize" Value="11.5"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
 
@@ -164,6 +165,14 @@
     <Style x:Key="BtnDanger" TargetType="Button" BasedOn="{StaticResource BtnGhost}">
       <Setter Property="Foreground" Value="{StaticResource Red}"/>
       <Setter Property="BorderBrush" Value="#59EF4444"/>
+    </Style>
+
+    <!-- подключение к серверу: заметная, но не главная (янтарная обводка + оттенок) -->
+    <Style x:Key="BtnConnect" TargetType="Button" BasedOn="{StaticResource BtnGhost}">
+      <Setter Property="Background" Value="#0DF5C842"/>
+      <Setter Property="BorderBrush" Value="#40F5C842"/>
+      <Setter Property="Foreground" Value="{StaticResource Amber}"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
 
     <!-- кнопка заголовка окна (min/close) -->

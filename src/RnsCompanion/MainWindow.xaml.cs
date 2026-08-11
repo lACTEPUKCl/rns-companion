@@ -195,9 +195,7 @@ public partial class MainWindow : Window
         UserPanel.Visibility = Visibility.Visible;
         VipCard.Visibility = Visibility.Visible;
         SessionCard.Visibility = Visibility.Visible;
-        TxtUserName.Text = DecodeJwtClaim(token, "username") ?? "игрок";
-        TxtUserName.Visibility = Visibility.Visible;
-        TxtAccount.Text = $"{TxtUserName.Text} · вход выполнен";
+        TxtAccount.Text = $"{DecodeJwtClaim(token, "username") ?? "игрок"} · вход выполнен";
         BtnStart.IsEnabled = true;
     }
 
@@ -207,7 +205,6 @@ public partial class MainWindow : Window
         UserPanel.Visibility = Visibility.Collapsed;
         VipCard.Visibility = Visibility.Collapsed;
         SessionCard.Visibility = Visibility.Collapsed;
-        TxtUserName.Visibility = Visibility.Collapsed;
         TxtAuthProgress.Visibility = Visibility.Collapsed;
         BtnStart.IsEnabled = false;
     }
