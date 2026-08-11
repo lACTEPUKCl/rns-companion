@@ -31,14 +31,17 @@ if (-not $btnUpdate) { Write-Host "FAIL: update button not shown"; Stop-Process 
 Write-Host "== update bar shown, clicking"
 $btnUpdate.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 
-# ждём самозамену: exe должен стать новой версии, процесс — перезапуститься
+# ждём самозамену: exe должен стать новой версии, процесс — перезапуститься (новый pid)
 $ok = $false
-for ($i = 0; $i -lt 60; $i++) {
+$expectedMin = [version]"$OldVersion.0"
+for ($i = 0; $i -lt 90; $i++) {
   Start-Sleep -Seconds 3
-  $v = (Get-Item $exe).VersionInfo.FileVersion
+  $v = [version](Get-Item $exe).VersionInfo.FileVersion
   $running = Get-Process RNS.Companion -ErrorAction SilentlyContinue
-  if ($v -ne $OldVersion -and $running) { $ok = $true; Write-Host "== swapped to $v, running pid=$($running.Id)"; break }
+  if ($v -gt $expectedMin -and $running -and $running.Id -ne $proc.Id) {
+    $ok = $true; Write-Host "== swapped to $v, new pid=$($running.Id) (old was $($proc.Id))"; break
+  }
   if ($i % 5 -eq 0) { Write-Host "   waiting... file=$v" }
 }
-if (-not $ok) { Write-Host "FAIL: no swap in 180s"; exit 1 }
+if (-not $ok) { Write-Host "FAIL: no swap in 270s"; exit 1 }
 Write-Host "UPDATE-E2E-OK"

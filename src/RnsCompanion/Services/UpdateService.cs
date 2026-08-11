@@ -23,13 +23,14 @@ internal static class UpdateService
     private const string LatestPage = ReleasesPage + "/latest";
     private const string DownloadBase = LatestPage + "/download/";
 
-    private static readonly HttpClient Http = CreateClient();
-    // Скачивание ~150 МБ — отдельный клиент с большим таймаутом.
-    private static readonly HttpClient HttpDownload = CreateClient(TimeSpan.FromMinutes(15));
+    private static readonly HttpClient Http = CreateClient(allowRedirect: false);
+    // Скачивание ~150 МБ — отдельный клиент с большим таймаутом и РЕДИРЕКТАМИ
+    // (ссылка /releases/latest/download/... ведёт на CDN через 302).
+    private static readonly HttpClient HttpDownload = CreateClient(allowRedirect: true, timeout: TimeSpan.FromMinutes(15));
 
-    private static HttpClient CreateClient(TimeSpan? timeout = null)
+    private static HttpClient CreateClient(bool allowRedirect, TimeSpan? timeout = null)
     {
-        var h = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        var h = new HttpClient(new HttpClientHandler { AllowAutoRedirect = allowRedirect })
         { Timeout = timeout ?? TimeSpan.FromSeconds(30) };
         h.DefaultRequestHeaders.UserAgent.ParseAdd("RNS-Companion-Updater");
         return h;
@@ -61,7 +62,8 @@ internal static class UpdateService
     /// После успешного возврата приложение должно завершиться — скрипт дождётся
     /// выхода, подменит exe и запустит его. Ошибки (сеть, хеш) — наружу, в UI.
     /// </summary>
-    public static async Task DownloadAndSwapAsync(UpdateInfo info, CancellationToken ct)
+    public static async Task DownloadAndSwapAsync(UpdateInfo info, CancellationToken ct,
+        IProgress<double>? progress = null)
     {
         var currentExe = Environment.ProcessPath
             ?? throw new InvalidOperationException("Не удалось определить путь к exe.");
@@ -69,40 +71,79 @@ internal static class UpdateService
         Directory.CreateDirectory(dir);
         var newExe = Path.Combine(dir, ExeName + ".new");
 
-        await using (var src = await HttpDownload.GetStreamAsync(info.ExeUrl, ct))
-        await using (var dst = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None))
-            await src.CopyToAsync(dst, ct);
+        LogService.Info($"Update: скачиваю {info.ExeUrl}");
+        using (var resp = await HttpDownload.GetAsync(info.ExeUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+        {
+            resp.EnsureSuccessStatusCode();
+            var total = resp.Content.Headers.ContentLength ?? 0;
+            await using var src = await resp.Content.ReadAsStreamAsync(ct);
+            await using var dst = new FileStream(newExe, FileMode.Create, FileAccess.Write, FileShare.None);
+            var buffer = new byte[256 * 1024];
+            long done = 0;
+            int read;
+            while ((read = await src.ReadAsync(buffer, ct)) > 0)
+            {
+                await dst.WriteAsync(buffer.AsMemory(0, read), ct);
+                done += read;
+                if (total > 0) progress?.Report((double)done / total);
+            }
+        }
+        var size = new FileInfo(newExe).Length;
+        if (size < 1_000_000) // exe ~150 МБ; меньше — точно не оно (страница ошибки и т.п.)
+        {
+            File.Delete(newExe);
+            throw new InvalidOperationException($"Скачанный файл подозрительно мал ({size} байт) — обновление отменено.");
+        }
+        LogService.Info($"Update: скачано {size} байт");
 
         if (info.ShaUrl is not null)
         {
-            var shaText = await Http.GetStringAsync(info.ShaUrl, ct);
+            var shaText = await HttpDownload.GetStringAsync(info.ShaUrl, ct); // download-ссылка — с редиректами
             var expected = shaText.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
             await using var fs = File.OpenRead(newExe);
             var actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
             if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(newExe);
+                LogService.Error($"Update: хеш не сошёлся (ожидали {expected}, получили {actual})");
                 throw new InvalidOperationException("Контрольная сумма обновления не сошлась — файл не применён.");
             }
+            LogService.Info("Update: sha256 сошёлся");
         }
 
         // Скрипт ждёт завершения нашего PID, подменяет exe и перезапускает его.
+        // Задержки через ping (timeout ломается без консоли), move — с ретраями:
+        // свежескачанный exe могут недолго держать Defender/индексатор.
         var pid = Environment.ProcessId;
         var script = Path.Combine(dir, "apply-update.cmd");
         await File.WriteAllTextAsync(script,
             "@echo off\r\n" +
             ":wait\r\n" +
             $"tasklist /FI \"PID eq {pid}\" | find \"{pid}\" >nul\r\n" +
-            "if %errorlevel%==0 ( timeout /t 1 /nobreak >nul & goto wait )\r\n" +
-            $"move /y \"{newExe}\" \"{currentExe}\" >nul\r\n" +
+            "if %errorlevel%==0 ( ping -n 2 127.0.0.1 >nul & goto wait )\r\n" +
+            "set /a tries=0\r\n" +
+            ":move\r\n" +
+            $"move /y \"{newExe}\" \"{currentExe}\" >nul 2>&1\r\n" +
+            "if not errorlevel 1 goto start\r\n" +
+            "set /a tries+=1\r\n" +
+            "if %tries% geq 40 goto fail\r\n" +
+            "ping -n 3 127.0.0.1 >nul\r\n" +
+            "goto move\r\n" +
+            ":start\r\n" +
             $"start \"\" \"{currentExe}\"\r\n" +
+            "goto cleanup\r\n" +
+            ":fail\r\n" +
+            $"echo update failed > \"{Path.Combine(dir, "update-failed.txt")}\"\r\n" +
+            ":cleanup\r\n" +
             "del \"%~f0\"\r\n", ct);
+        LogService.Info($"Update: скрипт записан ({script}), запускаю cmd для pid {pid}");
 
-        Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"")
+        var ps = Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"")
         {
             CreateNoWindow = true,
             UseShellExecute = false,
             WindowStyle = ProcessWindowStyle.Hidden,
         });
+        LogService.Info($"Update: cmd pid={ps?.Id.ToString() ?? "null"}");
     }
 }

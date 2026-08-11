@@ -597,11 +597,22 @@ public partial class MainWindow : Window
         if (_updateInProgress || _pendingUpdate is not { } info) return;
         _updateInProgress = true;
         BtnUpdate.IsEnabled = false;
-        BtnUpdate.Content = "Скачиваю…";
+        BtnUpdateLater.IsEnabled = false;
+        LogService.Info($"Update: старт обновления до v{info.Version}");
         AppendJournal($"Скачиваю обновление v{info.Version}…");
+        // Прогресс скачивания — прямо в плашку: «Скачиваю обновление… 42%».
+        var progress = new Progress<double>(p =>
+        {
+            TxtUpdate.Text = $"Скачиваю обновление v{info.Version} — {p * 100:0}%";
+            BtnUpdate.Content = $"{p * 100:0}%";
+        });
+        TxtUpdate.Text = $"Скачиваю обновление v{info.Version}…";
+        BtnUpdate.Content = "0%";
         try
         {
-            await UpdateService.DownloadAndSwapAsync(info, CancellationToken.None);
+            await UpdateService.DownloadAndSwapAsync(info, CancellationToken.None, progress);
+            TxtUpdate.Text = $"Обновление v{info.Version} установлено — перезапускаюсь…";
+            LogService.Info("Update: всё готово, закрываю приложение для подмены exe");
             AppendJournal($"Обновление v{info.Version} готово — перезапускаюсь для установки.");
             await Task.Delay(800);
             _reallyClose = true;
@@ -611,8 +622,10 @@ public partial class MainWindow : Window
         {
             LogService.Error("Автообновление не удалось", ex);
             AppendJournal($"Не удалось обновиться: {ex.Message}");
+            TxtUpdate.Text = $"Не удалось скачать обновление v{info.Version} — попробуйте ещё раз";
             BtnUpdate.Content = "Обновить";
             BtnUpdate.IsEnabled = true;
+            BtnUpdateLater.IsEnabled = true;
             _updateInProgress = false;
         }
     }
