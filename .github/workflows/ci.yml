@@ -13,6 +13,11 @@ permissions:
 
 env:
   PROJECT: src/RnsCompanion/RnsCompanion.csproj
+  # MSI SimplySign Desktop (Certum) — кэшируется action'ом подписи
+  SIMPLYSIGN_URL: "https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi"
+  # Секреты подписи (Settings → Secrets): CERTUM_USERNAME / CERTUM_OTP_URI / CERTUM_KEY_ID.
+  # Пока их нет — шаги подписи пропускаются, релиз собирается как раньше.
+  CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
 
 jobs:
   build:
@@ -38,6 +43,33 @@ jobs:
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:DebugType=none -p:DebugSymbols=false `
             -o publish
+
+      # ── Подпись кода (только релизы по тегу и только когда настроены секреты Certum) ──
+      - name: Cache SimplySign Installer
+        if: startsWith(github.ref, 'refs/tags/v') && env.CERTUM_KEY_ID != ''
+        uses: actions/cache@v4
+        with:
+          path: SimplySignDesktop.msi
+          key: simplysign-msi-${{ env.SIMPLYSIGN_URL }}
+
+      - name: Setup Certum SimplySign environment
+        if: startsWith(github.ref, 'refs/tags/v') && env.CERTUM_KEY_ID != ''
+        uses: dismine/windows-app-signing-setup-action@v1
+        with:
+          certum-username: ${{ secrets.CERTUM_USERNAME }}
+          certum-otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+          certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
+          simplysign-url: ${{ env.SIMPLYSIGN_URL }}
+
+      - name: Sign exe
+        if: startsWith(github.ref, 'refs/tags/v') && env.CERTUM_KEY_ID != ''
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\" -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          & $signtool.FullName sign /tr http://timestamp.certum.pl /td sha256 /fd sha256 `
+            /sha1 $env:CERTUM_KEY_ID "publish/RNS.Companion.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: SHA256
         shell: pwsh
