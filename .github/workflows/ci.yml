@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
 
+# Релиз по тегу создаётся от GITHUB_TOKEN — нужна запись (в новых репо по умолчанию read-only).
+permissions:
+  contents: write
+
 env:
   PROJECT: src/RnsCompanion/RnsCompanion.csproj
 
