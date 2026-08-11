@@ -92,6 +92,10 @@ public partial class MainWindow : Window
         RestoreAuth();
         JournalCard.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
 
+        // Если набор был включён до перезапуска приложения — подхватываем его.
+        if (_api.Token is not null)
+            _ = _seed.ResumeAsync(CancellationToken.None);
+
         _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _uiTimer.Tick += (_, _) => TickUi();
         _uiTimer.Start();
@@ -164,6 +168,7 @@ public partial class MainWindow : Window
             _tokens.Save(new AuthState { Token = token });
             ShowLoggedIn(token);
             AppendJournal("Вход выполнен. Токен сохранён в защищённом хранилище.");
+            await _seed.ResumeAsync(CancellationToken.None); // вдруг набор уже активен на сервере
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {

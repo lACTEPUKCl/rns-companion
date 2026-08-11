@@ -192,6 +192,31 @@ internal sealed class SeedController
     private static string DescribeOpening(DateTime? opensAt) =>
         opensAt is { } t ? "в " + t.ToLocalTime().ToString("HH:mm") : "в 06:00";
 
+    /// <summary>
+    /// Восстановление после перезапуска приложения: если участие активно на сервере —
+    /// продолжаем цикл опроса без повторного POST start и без стартовых побочных
+    /// эффектов (мониторы и т.п. уже обработаны при первом включении).
+    /// </summary>
+    public async Task ResumeAsync(CancellationToken ct)
+    {
+        if (IsRunning) return;
+
+        AutoseedMyResponse? my;
+        try { my = await _api.GetMyAsync(ct); }
+        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        {
+            return; // сеть/сервер недоступны — остаёмся в выключенном состоянии
+        }
+        if (my?.Enabled != true) return;
+
+        _loop = new CancellationTokenSource();
+        _scheduledMode = false;
+        _targetWasSeen = my.Target is not null;
+        LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
+        UpdateState(my);
+        _ = Task.Run(() => RunLoopAsync(_loop.Token));
+    }
+
     /// <summary>Выключить режим (POST /api/seed/stop) и остановить цикл.</summary>
     public async Task StopAsync()
     {
