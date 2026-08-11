@@ -28,9 +28,15 @@ public sealed class Sparkline : FrameworkElement
         nameof(Maximum), typeof(double), typeof(Sparkline),
         new FrameworkPropertyMetadata(100d, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    public static readonly DependencyProperty ThresholdProperty = DependencyProperty.Register(
+        nameof(Threshold), typeof(double), typeof(Sparkline),
+        new FrameworkPropertyMetadata(-1d, FrameworkPropertyMetadataOptions.AffectsRender));
+
     public IEnumerable? Values { get => (IEnumerable?)GetValue(ValuesProperty); set => SetValue(ValuesProperty, value); }
     public Brush Stroke { get => (Brush)GetValue(StrokeProperty); set => SetValue(StrokeProperty, value); }
     public double Maximum { get => (double)GetValue(MaximumProperty); set => SetValue(MaximumProperty, value); }
+    /// <summary>Порог заполнения (-1 — не рисовать): пунктирная линия цели набора.</summary>
+    public double Threshold { get => (double)GetValue(ThresholdProperty); set => SetValue(ThresholdProperty, value); }
 
     protected override void OnRender(DrawingContext drawingContext)
     {
@@ -57,6 +63,21 @@ public sealed class Sparkline : FrameworkElement
         }
 
         var values = Values?.Cast<object>().Select(Convert.ToDouble).ToArray() ?? Array.Empty<double>();
+
+        // Пунктирная линия порога заполнения — цель набора наглядно на графике.
+        if (Threshold >= 0)
+        {
+            var ty = top + plotHeight - Math.Clamp(Threshold / Math.Max(1, Maximum), 0, 1) * plotHeight;
+            var thresholdPen = new Pen(new SolidColorBrush(Color.FromArgb(170, 74, 222, 128)), 1)
+            {
+                DashStyle = DashStyles.Dash,
+            };
+            drawingContext.DrawLine(thresholdPen, new Point(left, ty), new Point(left + plotWidth, ty));
+            DrawText(drawingContext, $"порог {Threshold:0}",
+                new SolidColorBrush(Color.FromArgb(200, 74, 222, 128)), 9,
+                new Point(left + 4, ty - 12));
+        }
+
         if (values.Length < 2) return;
 
         var geometry = new StreamGeometry();

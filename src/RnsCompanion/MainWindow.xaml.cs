@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
     private bool _reallyClose;
     private bool _seedStartInProgress;
     private bool? _windowOpen; // из публичного статуса; null — бэкенд старый, не знаем
+    private int _threshold; // порог заполнения сервера (из публичного статуса)
 
     public MainWindow(bool scheduledLaunch)
     {
@@ -312,20 +314,39 @@ public partial class MainWindow : Window
 
         if (s.Target is { } target)
         {
+            var shortName = ShortServerName(target.Name, target.Key);
             TxtTargetName.Text = s.Phase == SeedPhase.OnTarget
-                ? $"Сейчас сидим: {target.Name ?? target.Key ?? "сервер"}"
-                : target.Name ?? target.Key ?? "Сервер";
+                ? $"Сейчас сидим: {shortName}"
+                : shortName;
+            TxtTargetName.ToolTip = target.Name; // полное имя — в тултипе
+            TxtTargetMode.Text = ServerModeTag(target.Name);
             TxtTargetMap.Text = string.IsNullOrWhiteSpace(target.Map) ? "" : $"карта: {target.Map}";
-            TxtTargetPlayers.Text = $"{target.Players} / {target.MaxPlayers}";
-            PlayersBar.Maximum = Math.Max(1, target.MaxPlayers);
-            AnimateProgress(Math.Clamp(target.Players, 0, target.MaxPlayers));
+
+            // Прогресс — до ПОРОГА заполнения (при достижении сервер «засеян»),
+            // а не до 100 слотов: это и есть цель набора.
+            var goal = _threshold > 0 ? _threshold : target.MaxPlayers;
+            var left = Math.Max(0, goal - target.Players);
+            TxtTargetPlayers.Text = $"{target.Players} / {goal}";
+            TxtTargetPlayers.ToolTip = $"мест на сервере: {target.MaxPlayers}";
+            TxtGoalHint.Text = left > 0
+                ? $"осталось {left} игроков — сервер считается заполненным при {goal}"
+                : "сервер заполнен — набор на нём завершён";
+            PlayersBar.Maximum = Math.Max(1, goal);
+            AnimateProgress(Math.Clamp(target.Players, 0, goal));
             OnlineSpark.Maximum = Math.Max(1, target.MaxPlayers);
+            OnlineSpark.Threshold = _threshold > 0 ? _threshold : -1;
+            TxtSparkNow.Text = $"сейчас: {target.Players}";
         }
         else
         {
             TxtTargetName.Text = "Цель пока не выбрана";
+            TxtTargetName.ToolTip = null;
+            TxtTargetMode.Text = "";
             TxtTargetMap.Text = "";
             TxtTargetPlayers.Text = "—";
+            TxtTargetPlayers.ToolTip = null;
+            TxtGoalHint.Text = "";
+            TxtSparkNow.Text = "";
             AnimateProgress(0);
         }
 
@@ -333,6 +354,22 @@ public partial class MainWindow : Window
         SparkHint.Visibility =
             s.Target is null && s.PlayersHistory.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         TickUi();
+    }
+
+    /// <summary>Короткое имя сервера: «Сервер №2» вместо полного рекламного названия.</summary>
+    private static string ShortServerName(string? name, string? key)
+    {
+        var m = Regex.Match(name ?? "", @"#\s*(\d+)");
+        if (m.Success) return $"Сервер №{m.Groups[1].Value}";
+        if (!string.IsNullOrWhiteSpace(key)) return key!;
+        return string.IsNullOrWhiteSpace(name) ? "Сервер" : name.Trim();
+    }
+
+    /// <summary>Режим из полного имени сервера: «#2 [RAAS/AAS] | …» → «RAAS/AAS».</summary>
+    private static string ServerModeTag(string? name)
+    {
+        var m = Regex.Match(name ?? "", @"#\s*\d+\s*\[([^\]]+)\]");
+        return m.Success ? m.Groups[1].Value : "";
     }
 
     /// <summary>Плавное обновление прогресс-бара онлайна цели.</summary>
@@ -385,6 +422,7 @@ public partial class MainWindow : Window
                 if (status?.Ok == true)
                 {
                     _windowOpen = status.Window?.Open; // null у старого бэкенда — не знаем
+                    if (status.Threshold > 0) _threshold = status.Threshold;
                     var text = BuildStatusText(status);
                     Dispatcher.Invoke(() =>
                     {
