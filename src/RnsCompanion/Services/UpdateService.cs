@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace RnsCompanion.Services;
 
@@ -12,57 +11,48 @@ internal sealed record UpdateInfo(Version Version, string ExeUrl, string? ShaUrl
 /// Автообновление: сверка с последним релизом на GitHub, скачивание нового exe,
 /// проверка SHA-256 (ассет RNS.Companion.exe.sha256 из релиза) и самозамена через
 /// cmd-скрипт, который ждёт выхода процесса, подменяет exe и запускает его снова.
+///
+/// Проверка версии — БЕЗ GitHub API: у api.github.com лимит 60 запросов/час на IP,
+/// а у пользователей за cgNAT он общий. Берём редирект страницы /releases/latest
+/// (302 → /releases/tag/vX.Y.Z) — веб-эндпоинты GitHub так не лимитируются.
 /// </summary>
 internal static class UpdateService
 {
     public const string ReleasesPage = "https://github.com/lACTEPUKCl/rns-companion/releases";
     public const string ExeName = "RNS.Companion.exe";
-    private const string LatestApi = "https://api.github.com/repos/lACTEPUKCl/rns-companion/releases/latest";
+    private const string LatestPage = ReleasesPage + "/latest";
+    private const string DownloadBase = LatestPage + "/download/";
 
-    private static readonly HttpClient Http = CreateClient(TimeSpan.FromSeconds(30));
+    private static readonly HttpClient Http = CreateClient();
     // Скачивание ~150 МБ — отдельный клиент с большим таймаутом.
     private static readonly HttpClient HttpDownload = CreateClient(TimeSpan.FromMinutes(15));
 
-    private static HttpClient CreateClient(TimeSpan timeout)
+    private static HttpClient CreateClient(TimeSpan? timeout = null)
     {
-        var h = new HttpClient { Timeout = timeout };
+        var h = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        { Timeout = timeout ?? TimeSpan.FromSeconds(30) };
         h.DefaultRequestHeaders.UserAgent.ParseAdd("RNS-Companion-Updater");
-        h.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return h;
     }
 
-    /// <summary>Проверить наличие новой версии. null — актуальная версия или ошибка сети/API.</summary>
+    /// <summary>Проверить наличие новой версии. null — актуальная версия или ошибка сети.</summary>
     public static async Task<UpdateInfo?> CheckAsync(Version current, CancellationToken ct)
     {
         try
         {
-            using var resp = await Http.GetAsync(LatestApi, ct);
-            if (!resp.IsSuccessStatusCode) return null;
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            var root = doc.RootElement;
-
-            var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() : null;
-            if (tag is null || !Version.TryParse(tag.TrimStart('v', 'V'), out var latest)) return null;
+            // /releases/latest отвечает 302 на /releases/tag/vX.Y.Z — тег из Location.
+            using var resp = await Http.GetAsync(LatestPage, ct);
+            var location = resp.Headers.Location?.ToString();
+            if (string.IsNullOrEmpty(location)) return null;
+            var tag = location.TrimEnd('/').Split('/').Last();
+            if (!Version.TryParse(tag.TrimStart('v', 'V'), out var latest)) return null;
             if (latest <= current) return null;
-
-            var page = root.TryGetProperty("html_url", out var h) ? h.GetString() : null;
-            string? exeUrl = null, shaUrl = null;
-            if (root.TryGetProperty("assets", out var assets))
-            {
-                foreach (var a in assets.EnumerateArray())
-                {
-                    var name = a.TryGetProperty("name", out var n) ? n.GetString() : null;
-                    var url = a.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
-                    if (name is null || url is null) continue;
-                    if (name.Equals(ExeName, StringComparison.OrdinalIgnoreCase)) exeUrl = url;
-                    else if (name.Equals(ExeName + ".sha256", StringComparison.OrdinalIgnoreCase)) shaUrl = url;
-                }
-            }
-            return exeUrl is null ? null : new UpdateInfo(latest, exeUrl, shaUrl, page ?? ReleasesPage);
+            return new UpdateInfo(latest, DownloadBase + ExeName, DownloadBase + ExeName + ".sha256",
+                $"{ReleasesPage}/tag/{tag}");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            return null; // сеть/лимиты GitHub — проверим при следующем проходе
+            return null; // сеть — проверим при следующем проходе
         }
     }
 
