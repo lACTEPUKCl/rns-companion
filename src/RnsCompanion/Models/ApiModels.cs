@@ -50,6 +50,9 @@ public sealed class AutoseedMyResponse
 
     /// <summary>Окно набора; null у старого бэкенда — считаем открытым.</summary>
     [JsonPropertyName("window")] public SeedWindowInfo? Window { get; set; }
+
+    /// <summary>Все живые серверы выше порога — набор завершён (null у старого бэкенда).</summary>
+    [JsonPropertyName("allSeeded")] public bool? AllSeeded { get; set; }
 }
 
 /// <summary>Элемент списка серверов в GET /api/seed/status.</summary>

@@ -26,12 +26,11 @@ internal static class SeedDecisions
         return nowUtc - lastJoinUtc.Value >= JoinMinInterval;
     }
 
-    /// <summary>
-    /// Набор завершён: режим включён, цель раньше была, а теперь пропала —
-    /// все серверы набрали порог игроков.
-    /// </summary>
+    /// <summary>Набор завершён: сервер сообщил, что ВСЕ серверы заполнены порогом
+    /// (пауза без цели в полосе покоя — не завершение). Старый бэкенд без флага —
+    /// легаси-эвристика: цель была и пропала.</summary>
     public static bool IsSeedCompleted(bool targetWasSeen, AutoseedMyResponse my) =>
-        my.Enabled && targetWasSeen && my.Target is null;
+        my.Enabled && (my.AllSeeded ?? (targetWasSeen && my.Target is null));
 }
 
 internal enum SeedPhase
