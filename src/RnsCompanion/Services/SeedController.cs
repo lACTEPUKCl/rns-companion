@@ -73,6 +73,10 @@ internal sealed class SeedController
     private bool _targetWasSeen;
     private bool _scheduledMode;
     private readonly List<double> _history = new();
+    // Пауза перед первым join после старта/возобновления: presence-кэш бэкенда
+    // протухает до ~20 с, и первый полл может не видеть, что мы УЖЕ на цели —
+    // без паузы приложение переподключает на тот же сервер.
+    private DateTime _noJoinUntilUtc = DateTime.MinValue;
 
     public SeedState State { get; } = new();
 
@@ -123,6 +127,7 @@ internal sealed class SeedController
         }
 
         ApplyStartSideEffects();
+        _noJoinUntilUtc = DateTime.UtcNow.AddSeconds(60);
 
         State.Phase = SeedPhase.Connecting;
         State.StatusText = "Набор включён. Опрашиваю сервер…";
@@ -212,6 +217,7 @@ internal sealed class SeedController
         _loop = new CancellationTokenSource();
         _scheduledMode = false;
         _targetWasSeen = my.Target is not null;
+        _noJoinUntilUtc = DateTime.UtcNow.AddSeconds(60);
         LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
         UpdateState(my);
         _ = Task.Run(() => RunLoopAsync(_loop.Token));
@@ -313,7 +319,8 @@ internal sealed class SeedController
                         return;
                     }
 
-                    if (SeedDecisions.ShouldLaunchJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow))
+                    if (DateTime.UtcNow >= _noJoinUntilUtc &&
+                        SeedDecisions.ShouldLaunchJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow))
                     {
                         TryApplyLowPreset();
                         LaunchJoin(my.JoinUrl!, my.Target!.Key!);
