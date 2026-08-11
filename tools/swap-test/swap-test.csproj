@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>swap-test</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\RnsCompanion\Services\ConfigSwapService.cs" Link="ConfigSwapService.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\GameProcessService.cs" Link="GameProcessService.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\LogService.cs" Link="LogService.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\SchedulerService.cs" Link="SchedulerService.cs" />
+    <EmbeddedResource Include="..\..\src\RnsCompanion\Presets\GameUserSettings.low.ini"
+                      LogicalName="RnsCompanion.Presets.GameUserSettings.low.ini" />
+  </ItemGroup>
+</Project>

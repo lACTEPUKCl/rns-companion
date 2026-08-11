@@ -1,0 +1,143 @@
+<Window x:Class="RnsCompanion.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Настройки — RNS Companion" Width="560" Height="860"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+
+  <Border x:Name="RootBorder" Margin="10" CornerRadius="16" Background="{StaticResource WindowBg}"
+          BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+    <Border.Effect>
+      <DropShadowEffect Color="Black" BlurRadius="28" ShadowDepth="0" Opacity="0.55"/>
+    </Border.Effect>
+
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <!-- title bar -->
+      <Border Grid.Row="0" x:Name="TitleBar" Padding="14,6,8,6" Background="Transparent">
+        <Grid>
+          <TextBlock Text="Настройки" Style="{StaticResource BaseText}"
+                     Foreground="{StaticResource Text2}" FontSize="12"
+                     VerticalAlignment="Center"/>
+          <Button x:Name="BtnClose" Content="✕" Style="{StaticResource BtnChromeClose}"
+                  HorizontalAlignment="Right"/>
+        </Grid>
+      </Border>
+
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="4,0,0,0">
+        <StackPanel Margin="18,4,22,14">
+
+          <!-- Энергосбережение -->
+          <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+            <StackPanel>
+              <TextBlock Text="ЭНЕРГОСБЕРЕЖЕНИЕ" Style="{StaticResource SectionTitle}"/>
+              <StackPanel Margin="0,4,0,0">
+                <CheckBox x:Name="ChkMonitorOff"
+                          Content="Гасить мониторы при ручном запуске набора"/>
+                <CheckBox x:Name="ChkMonitorOffScheduled"
+                          Content="Гасить мониторы при запуске по расписанию"/>
+                <CheckBox x:Name="ChkLowGraphics"
+                          Content="Low-graphics на время набора (подмена GameUserSettings.ini)"/>
+                <TextBlock Style="{StaticResource HintText}" FontSize="11" Margin="48,0,0,2"
+                           Text="Оригинальный конфиг сохраняется в GameUserSettings.rnsbak.ini и восстанавливается после набора (даже после сбоя — при следующем запуске)."/>
+                <CheckBox x:Name="ChkCloseGame"
+                          Content="Закрывать игру, когда все серверы заполнены"/>
+                <CheckBox x:Name="ChkSleep"
+                          Content="Уводить ПК в сон после завершения набора"/>
+                <CheckBox x:Name="ChkTray"
+                          Content="Сворачивать в трей вместо закрытия"/>
+                <CheckBox x:Name="ChkShowJournal"
+                          Content="Показывать журнал событий на главном окне"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <!-- Расписание -->
+          <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+            <StackPanel>
+              <TextBlock Text="РАСПИСАНИЕ (ПЛАНИРОВЩИК WINDOWS)" Style="{StaticResource SectionTitle}"/>
+              <CheckBox x:Name="ChkScheduleEnabled" Margin="0,10,0,0"
+                        Content="Запускать набор автоматически по расписанию"/>
+
+              <StackPanel x:Name="ScheduleBody" Margin="24,4,0,0">
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                  <RadioButton x:Name="RbEveryDay" Content="Каждый день" GroupName="sched"/>
+                  <RadioButton x:Name="RbCustomDays" Content="По дням недели" GroupName="sched"/>
+                </StackPanel>
+
+                <WrapPanel x:Name="DaysPanel" Margin="0,8,0,0">
+                  <CheckBox x:Name="ChkMon" Content="Пн" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkTue" Content="Вт" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkWed" Content="Ср" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkThu" Content="Чт" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkFri" Content="Пт" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkSat" Content="Сб" Margin="0,2,14,2"/>
+                  <CheckBox x:Name="ChkSun" Content="Вс" Margin="0,2,0,2"/>
+                </WrapPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                  <TextBlock Text="Время:" Style="{StaticResource BaseText}"
+                             Foreground="{StaticResource Text1}" VerticalAlignment="Center"/>
+                  <TextBox x:Name="TxtTime" Style="{StaticResource TacTextBox}" Width="76"
+                           Margin="10,0,0,0" HorizontalContentAlignment="Center"/>
+                  <TextBlock Text="(локальное, ЧЧ:мм — например 06:00)"
+                             Style="{StaticResource HintText}" FontSize="11"
+                             VerticalAlignment="Center" Margin="10,0,0,0"/>
+                </StackPanel>
+
+                <CheckBox x:Name="ChkWake" Margin="0,10,0,0"
+                          Content="Будить компьютер из сна"/>
+
+                <Border Margin="0,10,0,0" Padding="12,9" CornerRadius="10"
+                        Background="#14FFFFFF" BorderBrush="{StaticResource LineBrush}"
+                        BorderThickness="1">
+                  <TextBlock x:Name="TxtScheduleConfirm" Style="{StaticResource HintText}"
+                             Foreground="{StaticResource Text1}"/>
+                </Border>
+
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                  <Button x:Name="BtnDeleteSchedule" Content="Удалить расписание"
+                          Style="{StaticResource BtnDanger}" Padding="12,6"/>
+                  <TextBlock x:Name="TxtScheduleState" Style="{StaticResource HintText}"
+                             Foreground="{StaticResource Blue}" FontSize="11"
+                             VerticalAlignment="Center" Margin="12,0,0,0"
+                             TextWrapping="Wrap"/>
+                </StackPanel>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <!-- О программе -->
+          <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+            <StackPanel Orientation="Horizontal">
+              <Border Width="44" Height="44" CornerRadius="11" Background="#14FFFFFF"
+                      BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+                <Image Source="pack://application:,,,/Assets/logo.png" Width="30" Height="30"
+                       Margin="6"/>
+              </Border>
+              <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="RNS — Набор игроков (Companion)" Style="{StaticResource BaseText}"
+                           FontWeight="SemiBold"/>
+                <TextBlock x:Name="TxtAboutVersion" Style="{StaticResource HintText}" FontSize="11"/>
+                <TextBlock Style="{StaticResource HintText}" FontSize="11"
+                           Text="Открытый код · не читает память игры · не собирает данные"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <!-- Кнопки -->
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnCancel" Content="Отмена" Style="{StaticResource BtnGhost}"
+                    Margin="0,0,10,0"/>
+            <Button x:Name="BtnSave" Content="Сохранить" Style="{StaticResource BtnAmber}"/>
+          </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+  </Border>
+</Window>

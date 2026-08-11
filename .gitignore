@@ -1,0 +1,12 @@
+# build output
+bin/
+obj/
+publish/
+
+# smoke-test artifacts
+smoke-*.png
+
+# IDE / OS
+*.user
+.vs/
+Thumbs.db
