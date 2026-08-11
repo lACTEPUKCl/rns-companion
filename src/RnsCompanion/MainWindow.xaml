@@ -144,7 +144,7 @@
           <TextBlock x:Name="TxtTargetMap" Style="{StaticResource HintText}" Text=""/>
 
           <!-- Прогресс до порога заполнения (порог — когда сервер считается засеянным) -->
-          <Grid Margin="0,14,0,4">
+          <Grid x:Name="GoalHeader" Margin="0,14,0,4">
             <TextBlock Text="Заполнение сервера" Style="{StaticResource HintText}" FontSize="11"
                        VerticalAlignment="Center"/>
             <TextBlock x:Name="TxtTargetPlayers" Style="{StaticResource BaseText}"
@@ -157,18 +157,18 @@
                      Margin="0,4,0,0" Text=""/>
 
           <!-- График онлайна цели -->
-          <Grid Margin="0,12,0,2">
+          <Grid x:Name="SparkHeader" Margin="0,12,0,2">
             <TextBlock Text="Онлайн цели за последний час" Style="{StaticResource HintText}"
                        FontSize="11" VerticalAlignment="Center"/>
             <TextBlock x:Name="TxtSparkNow" Style="{StaticResource HintText}" FontSize="11"
                        HorizontalAlignment="Right" Text=""/>
           </Grid>
-          <Grid Height="86">
+          <Grid x:Name="SparkArea" Height="86">
             <controls:Sparkline x:Name="OnlineSpark"
                                 Stroke="{StaticResource Amber}" Maximum="100"/>
             <TextBlock x:Name="SparkHint" Style="{StaticResource HintText}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Text="нет данных — цель не выбрана"/>
+                       Text="собираю статистику…"/>
           </Grid>
         </StackPanel>
       </Border>

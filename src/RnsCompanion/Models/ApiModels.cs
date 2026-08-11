@@ -75,6 +75,7 @@ public sealed class AutoseedStatusResponse
     [JsonPropertyName("servers")] public List<ServerStatusInfo>? Servers { get; set; }
     [JsonPropertyName("updatedAt")] public DateTime? UpdatedAt { get; set; }
     [JsonPropertyName("window")] public SeedWindowInfo? Window { get; set; }
+    [JsonPropertyName("allSeeded")] public bool? AllSeeded { get; set; }
 }
 
 /// <summary>GET /api/vip/my — баланс бонусов и статус личной VIP.</summary>
