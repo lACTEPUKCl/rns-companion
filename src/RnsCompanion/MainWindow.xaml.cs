@@ -64,8 +64,18 @@ public partial class MainWindow : Window
             if (e.ButtonState == System.Windows.Input.MouseButtonState.Pressed)
                 DragMove();
         };
+        SidebarBorder.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ButtonState == System.Windows.Input.MouseButtonState.Pressed)
+                DragMove();
+        };
         BtnMinimize.Click += (_, _) => WindowState = WindowState.Minimized;
         BtnClose.Click += (_, _) => Close();
+
+        // Навигация по страницам (сайдбар)
+        NavSeed.Checked += (_, _) => ShowPage(Page.Seed);
+        NavVip.Checked += (_, _) => ShowPage(Page.Vip);
+        NavJournal.Checked += (_, _) => ShowPage(Page.Journal);
 
         InitTray();
 
@@ -93,7 +103,7 @@ public partial class MainWindow : Window
         };
 
         RestoreAuth();
-        JournalCard.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
+        NavJournal.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
 
         // Если набор был включён до перезапуска приложения — подхватываем его.
         if (_api.Token is not null)
@@ -194,8 +204,9 @@ public partial class MainWindow : Window
         LoginPanel.Visibility = Visibility.Collapsed;
         UserPanel.Visibility = Visibility.Visible;
         VipCard.Visibility = Visibility.Visible;
+        VipLoginHint.Visibility = Visibility.Collapsed;
         SessionCard.Visibility = Visibility.Visible;
-        TxtAccount.Text = $"{DecodeJwtClaim(token, "username") ?? "игрок"} · вход выполнен";
+        TxtAccount.Text = DecodeJwtClaim(token, "username") ?? "игрок";
         BtnStart.IsEnabled = true;
     }
 
@@ -204,9 +215,27 @@ public partial class MainWindow : Window
         LoginPanel.Visibility = Visibility.Visible;
         UserPanel.Visibility = Visibility.Collapsed;
         VipCard.Visibility = Visibility.Collapsed;
+        VipLoginHint.Visibility = Visibility.Visible;
         SessionCard.Visibility = Visibility.Collapsed;
         TxtAuthProgress.Visibility = Visibility.Collapsed;
         BtnStart.IsEnabled = false;
+    }
+
+    // ─────────────────────────── Навигация (сайдбар) ───────────────────────────
+
+    private enum Page { Seed, Vip, Journal }
+
+    private void ShowPage(Page page)
+    {
+        PageSeed.Visibility = page == Page.Seed ? Visibility.Visible : Visibility.Collapsed;
+        PageVip.Visibility = page == Page.Vip ? Visibility.Visible : Visibility.Collapsed;
+        PageJournal.Visibility = page == Page.Journal ? Visibility.Visible : Visibility.Collapsed;
+        TxtPageTitle.Text = page switch
+        {
+            Page.Vip => "VIP и бонусы",
+            Page.Journal => "Журнал",
+            _ => "Набор игроков",
+        };
     }
 
     private static string? ExtractCode(string uri)
@@ -367,7 +396,7 @@ public partial class MainWindow : Window
                     Subtitle = string.Join(" · ", new[]
                         {
                             ServerModeTag(s.Name),
-                            string.IsNullOrWhiteSpace(s.Map) ? "" : s.Map,
+                            FormatMap(s.Map),
                         }.Where(x => !string.IsNullOrWhiteSpace(x))),
                     Online = online ? $"{s.Players} / {s.MaxPlayers}" : "офлайн",
                     IsTarget = isTarget,
@@ -379,7 +408,7 @@ public partial class MainWindow : Window
                         ? "сервер не отвечает"
                         : left > 0
                             ? $"до заполнения осталось {left} (порог {goal})"
-                            : "заполнен — набор не требуется",
+                            : "заполнен",
                 };
             })
             .ToList();
@@ -431,6 +460,15 @@ public partial class MainWindow : Window
         return m.Success ? m.Groups[1].Value : "";
     }
 
+    /// <summary>Красивое имя карты: «Tallil_Outskirts_Invasion_v3» → «Tallil Outskirts · Invasion v3».</summary>
+    private static string FormatMap(string? map)
+    {
+        if (string.IsNullOrWhiteSpace(map)) return "";
+        var m = Regex.Match(map.Trim(), @"^(.+?)_([A-Za-z]+)_(v\d+)$");
+        if (!m.Success) return map.Trim();
+        return $"{m.Groups[1].Value.Replace('_', ' ')} · {m.Groups[2].Value} {m.Groups[3].Value}";
+    }
+
     private void TickUi()
     {
         var session = _seed.State.Session;
@@ -448,13 +486,13 @@ public partial class MainWindow : Window
         else if (_seed.State.Phase == SeedPhase.Connecting)
         {
             TxtTimer.Text = "—:—:—";
-            TxtTimer.Foreground = (Brush)FindResource("Text2");
+            TxtTimer.Foreground = (Brush)FindResource("TextDim");
             TxtBonuses.Text = "";
         }
         else
         {
             TxtTimer.Text = "00:00:00";
-            TxtTimer.Foreground = (Brush)FindResource("Text2");
+            TxtTimer.Foreground = (Brush)FindResource("TextDim"); // неактивный таймер — тусклый
             TxtBonuses.Text = "";
         }
     }
@@ -658,7 +696,7 @@ public partial class MainWindow : Window
             _settings = window.Result;
             _settingsStore.Save(_settings);
             _api.BaseUrl = _settings.BaseUrl;
-            JournalCard.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
+            NavJournal.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
             AppendJournal("Настройки сохранены.");
         }
     }

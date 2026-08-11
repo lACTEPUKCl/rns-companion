@@ -18,6 +18,7 @@
     <SolidColorBrush x:Key="Text0" Color="#F0F5F8FF"/>
     <SolidColorBrush x:Key="Text1" Color="#B8F5F8FF"/>
     <SolidColorBrush x:Key="Text2" Color="#8CF5F8FF"/>
+    <SolidColorBrush x:Key="TextDim" Color="#4DF5F8FF"/>
     <!-- lines / panels -->
     <SolidColorBrush x:Key="LineBrush" Color="#14FFFFFF"/>
     <SolidColorBrush x:Key="LineStrong" Color="#29FFFFFF"/>
