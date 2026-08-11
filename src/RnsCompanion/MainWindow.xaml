@@ -129,47 +129,69 @@
         </Grid>
       </Border>
 
-      <!-- ═══ Цель набора (скрыта до входа) ═══ -->
-      <Border Grid.Row="4" x:Name="TargetCard" Style="{StaticResource Card}" Margin="22,0,22,14"
-              Visibility="Collapsed">
+      <!-- ═══ Серверы: живой список, цель набора выделена и первая ═══ -->
+      <Border Grid.Row="4" x:Name="ServersCard" Style="{StaticResource Card}" Margin="22,0,22,14">
         <StackPanel>
-          <Grid>
-            <TextBlock Text="ЦЕЛЬ НАБОРА" Style="{StaticResource SectionTitle}"/>
-            <TextBlock x:Name="TxtTargetMode" Style="{StaticResource HintText}" FontSize="11"
-                       HorizontalAlignment="Right" VerticalAlignment="Center" Text=""/>
+          <Grid Margin="0,0,0,8">
+            <TextBlock Text="СЕРВЕРЫ" Style="{StaticResource SectionTitle}"/>
+            <TextBlock x:Name="TxtTotalOnline" Style="{StaticResource HintText}" FontSize="11"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
           </Grid>
-          <TextBlock x:Name="TxtTargetName" Style="{StaticResource BaseText}"
-                     FontFamily="{StaticResource FontDisplay}" FontSize="18"
-                     FontWeight="SemiBold" Margin="0,8,0,2" Text="Цель пока не выбрана"/>
-          <TextBlock x:Name="TxtTargetMap" Style="{StaticResource HintText}" Text=""/>
-
-          <!-- Прогресс до порога заполнения (порог — когда сервер считается засеянным) -->
-          <Grid x:Name="GoalHeader" Margin="0,14,0,4">
-            <TextBlock Text="Заполнение сервера" Style="{StaticResource HintText}" FontSize="11"
-                       VerticalAlignment="Center"/>
-            <TextBlock x:Name="TxtTargetPlayers" Style="{StaticResource BaseText}"
-                       HorizontalAlignment="Right" FontWeight="SemiBold"
-                       Foreground="{StaticResource Amber}" Text="—"/>
-          </Grid>
-          <ProgressBar x:Name="PlayersBar" Style="{StaticResource SeedProgress}"
-                       Minimum="0" Maximum="100" Value="0"/>
-          <TextBlock x:Name="TxtGoalHint" Style="{StaticResource HintText}" FontSize="11"
-                     Margin="0,4,0,0" Text=""/>
-
-          <!-- График онлайна цели -->
-          <Grid x:Name="SparkHeader" Margin="0,12,0,2">
-            <TextBlock Text="Онлайн цели за последний час" Style="{StaticResource HintText}"
-                       FontSize="11" VerticalAlignment="Center"/>
-            <TextBlock x:Name="TxtSparkNow" Style="{StaticResource HintText}" FontSize="11"
-                       HorizontalAlignment="Right" Text=""/>
-          </Grid>
-          <Grid x:Name="SparkArea" Height="86">
-            <controls:Sparkline x:Name="OnlineSpark"
-                                Stroke="{StaticResource Amber}" Maximum="100"/>
-            <TextBlock x:Name="SparkHint" Style="{StaticResource HintText}"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Text="собираю статистику…"/>
-          </Grid>
+          <ItemsControl x:Name="ServersList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Padding="12,9" Margin="0,0,0,8" CornerRadius="10" BorderThickness="1">
+                  <Border.Style>
+                    <Style TargetType="Border">
+                      <Setter Property="Background" Value="#0AFFFFFF"/>
+                      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}"/>
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsTarget}" Value="True">
+                          <Setter Property="BorderBrush" Value="{StaticResource Amber}"/>
+                          <Setter Property="Background" Value="#14F5B942"/>
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Border.Style>
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                      <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource BaseText}"
+                                   FontWeight="SemiBold" ToolTip="{Binding FullName}"/>
+                        <Border Visibility="{Binding TargetBadge}" Margin="10,0,0,0"
+                                Padding="8,2" CornerRadius="8" VerticalAlignment="Center"
+                                Background="{StaticResource PillBusyBg}">
+                          <TextBlock Text="{Binding Badge}" FontSize="10" FontWeight="SemiBold"
+                                     Foreground="{StaticResource PillBusyFg}"/>
+                        </Border>
+                      </StackPanel>
+                      <TextBlock Text="{Binding Subtitle}" Style="{StaticResource HintText}"
+                                 FontSize="11" Margin="0,2,0,0"/>
+                      <ProgressBar Style="{StaticResource SeedProgress}" Height="6"
+                                   Margin="0,7,0,4" Minimum="0"
+                                   Maximum="{Binding ProgressMax}" Value="{Binding Progress}"/>
+                      <TextBlock Text="{Binding Hint}" Style="{StaticResource HintText}" FontSize="11"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,0,0">
+                      <TextBlock Text="{Binding Online}" Style="{StaticResource BaseText}"
+                                 FontWeight="SemiBold" Foreground="{StaticResource Amber}"
+                                 HorizontalAlignment="Right"/>
+                      <Button Content="Подключиться" Style="{StaticResource BtnGhost}"
+                              Padding="10,5" FontSize="11.5" Margin="0,7,0,0"
+                              IsEnabled="{Binding IsOnline}"
+                              Click="BtnConnectServer_Click"/>
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock x:Name="TxtServersEmpty" Style="{StaticResource HintText}"
+                     Text="Загружаю список серверов…"/>
         </StackPanel>
       </Border>
 

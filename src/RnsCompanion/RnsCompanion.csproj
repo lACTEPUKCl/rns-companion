@@ -12,9 +12,9 @@
     <RootNamespace>RnsCompanion</RootNamespace>
     <Product>RNS Companion</Product>
     <Description>RNS — Набор игроков на сервера Squad (rnserver.ru)</Description>
-    <Version>1.2.5</Version>
-    <AssemblyVersion>1.2.5.0</AssemblyVersion>
-    <FileVersion>1.2.5.0</FileVersion>
+    <Version>1.3.0</Version>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 

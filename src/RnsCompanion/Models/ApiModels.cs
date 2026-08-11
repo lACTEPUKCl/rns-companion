@@ -90,6 +90,12 @@ public sealed class VipMyResponse
     [JsonPropertyName("missing")] public int Missing { get; set; }
 }
 
+/// <summary>GET /api/sqb/join-link?format=json → { joinUrl }</summary>
+public sealed class JoinLinkResponse
+{
+    [JsonPropertyName("joinUrl")] public string? JoinUrl { get; set; }
+}
+
 /// <summary>POST /api/auth/desktop/exchange → { ok, token }</summary>
 public sealed class ExchangeResponse
 {

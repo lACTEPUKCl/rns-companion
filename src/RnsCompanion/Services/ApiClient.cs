@@ -76,6 +76,17 @@ internal sealed class ApiClient : IDisposable
     public Task<AutoseedStatusResponse?> GetStatusAsync(CancellationToken ct) =>
         GetAsync<AutoseedStatusResponse>("/api/seed/status", ct);
 
+    /// <summary>steam:// ссылка подключения к серверу по имени (публичный join-link).</summary>
+    public async Task<string?> GetJoinUrlAsync(string serverName, CancellationToken ct)
+    {
+        using var resp = await SendAsync(HttpMethod.Get,
+            $"/api/sqb/join-link?format=json&name={Uri.EscapeDataString(serverName)}",
+            null, csrf: false, ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        var data = await ReadJsonAsync<JoinLinkResponse>(resp, ct);
+        return data?.JoinUrl;
+    }
+
     /// <summary>POST /api/seed/start {client:"desktop"} (CSRF).</summary>
     public Task StartSeedAsync(CancellationToken ct) =>
         PostWithCsrfAsync("/api/seed/start", new { client = "desktop" }, ct);

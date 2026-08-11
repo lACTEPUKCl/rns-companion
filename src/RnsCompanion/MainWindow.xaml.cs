@@ -35,12 +35,9 @@ public partial class MainWindow : Window
     private bool _seedStartInProgress;
     private bool? _windowOpen; // из публичного статуса; null — бэкенд старый, не знаем
     private int _threshold; // порог заполнения сервера (из публичного статуса)
-    // Карточка цели питается от публичного статуса (а не только от цикла набора),
-    // поэтому она живая и когда набор выключен.
-    private TargetInfo? _publicTarget;
-    private bool? _allSeeded;
-    private readonly List<double> _publicHistory = new();
-    private const int MaxHistoryPoints = 120;
+    // Последний публичный статус — источник карточки серверов (живёт всегда,
+    // независимо от того, включён ли личный набор и залогинен ли пользователь).
+    private AutoseedStatusResponse? _lastStatus;
 
     public MainWindow(bool scheduledLaunch)
     {
@@ -197,7 +194,6 @@ public partial class MainWindow : Window
         LoginPanel.Visibility = Visibility.Collapsed;
         UserPanel.Visibility = Visibility.Visible;
         VipCard.Visibility = Visibility.Visible;
-        TargetCard.Visibility = Visibility.Visible;
         SessionCard.Visibility = Visibility.Visible;
         TxtUserName.Text = DecodeJwtClaim(token, "username") ?? "игрок";
         TxtUserName.Visibility = Visibility.Visible;
@@ -210,7 +206,6 @@ public partial class MainWindow : Window
         LoginPanel.Visibility = Visibility.Visible;
         UserPanel.Visibility = Visibility.Collapsed;
         VipCard.Visibility = Visibility.Collapsed;
-        TargetCard.Visibility = Visibility.Collapsed;
         SessionCard.Visibility = Visibility.Collapsed;
         TxtUserName.Visibility = Visibility.Collapsed;
         TxtAuthProgress.Visibility = Visibility.Collapsed;
@@ -323,63 +318,104 @@ public partial class MainWindow : Window
         TxtPill.Foreground = (Brush)FindResource(pillFg);
         TxtPill.Text = pillText;
 
-        UpdateTargetCard(); // префикс «Сейчас сидим:» зависит от фазы
+        UpdateServersCard(); // бейдж «ВЫ ЗДЕСЬ» зависит от фазы
         TickUi();
     }
 
-    /// <summary>
-    /// Карточка цели — всегда из публичного статуса: живая и при выключенном наборе.
-    /// Нет цели — секции прячем, остаётся одна понятная строка с причиной.
-    /// </summary>
-    private void UpdateTargetCard()
+    // ─────────────────────────── Карточка серверов ───────────────────────────
+
+    private sealed class ServerRow
     {
-        var target = _publicTarget;
-        if (target is null)
+        public string FullName { get; set; } = "";
+        public string Title { get; set; } = "";
+        public string Subtitle { get; set; } = "";
+        public string Online { get; set; } = "";
+        public string Hint { get; set; } = "";
+        public string Badge { get; set; } = "";
+        public bool IsTarget { get; set; }
+        public bool IsOnline { get; set; } = true;
+        public double Progress { get; set; }
+        public double ProgressMax { get; set; } = 100;
+        public Visibility TargetBadge => IsTarget ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Список всех серверов из публичного статуса: цель набора — первая и
+    /// выделена; у каждой строки онлайн, карта, прогресс засева и кнопка
+    /// быстрого подключения (работает и без включённого набора).
+    /// </summary>
+    private void UpdateServersCard()
+    {
+        var status = _lastStatus;
+        var servers = status?.Servers ?? new List<ServerStatusInfo>();
+        var targetKey = status?.Target?.Key;
+
+        TxtTotalOnline.Text = servers.Count > 0
+            ? $"всего онлайн: {servers.Where(s => IsOk(s)).Sum(s => s.Players)}"
+            : "";
+        TxtServersEmpty.Visibility = servers.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+
+        var rows = servers
+            .OrderByDescending(s => s.Key == targetKey) // цель — первой
+            .Select(s =>
+            {
+                var isTarget = s.Key == targetKey;
+                var online = IsOk(s);
+                var goal = _threshold > 0 ? _threshold : s.MaxPlayers;
+                var left = Math.Max(0, goal - s.Players);
+                return new ServerRow
+                {
+                    FullName = s.Name ?? "",
+                    Title = ShortServerName(s.Name, s.Key),
+                    Subtitle = string.Join(" · ", new[]
+                        {
+                            ServerModeTag(s.Name),
+                            string.IsNullOrWhiteSpace(s.Map) ? "" : s.Map,
+                        }.Where(x => !string.IsNullOrWhiteSpace(x))),
+                    Online = online ? $"{s.Players} / {s.MaxPlayers}" : "офлайн",
+                    IsTarget = isTarget,
+                    IsOnline = online,
+                    Badge = isTarget && _seed.State.Phase == SeedPhase.OnTarget ? "ВЫ ЗДЕСЬ" : "ЦЕЛЬ НАБОРА",
+                    Progress = online ? Math.Clamp(s.Players, 0, goal) : 0,
+                    ProgressMax = Math.Max(1, goal),
+                    Hint = !online
+                        ? "сервер не отвечает"
+                        : left > 0
+                            ? $"до заполнения осталось {left} (порог {goal})"
+                            : "заполнен — набор не требуется",
+                };
+            })
+            .ToList();
+        ServersList.ItemsSource = rows;
+    }
+
+    private static bool IsOk(ServerStatusInfo s) =>
+        string.Equals(s.Status, "ok", StringComparison.OrdinalIgnoreCase);
+
+    private async void BtnConnectServer_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { DataContext: ServerRow row } btn) return;
+        if (string.IsNullOrWhiteSpace(row.FullName)) return;
+        btn.IsEnabled = false;
+        try
         {
-            TxtTargetName.Text = "Цели сейчас нет";
-            TxtTargetName.ToolTip = null;
-            TxtTargetMode.Text = "";
-            TxtTargetMap.Text = _allSeeded == true
-                ? "все серверы заполнены — набор завершён"
-                : "серверы в паузе: набор продолжится, когда онлайн просядет";
-            GoalHeader.Visibility = Visibility.Collapsed;
-            PlayersBar.Visibility = Visibility.Collapsed;
-            TxtGoalHint.Visibility = Visibility.Collapsed;
-            SparkHeader.Visibility = Visibility.Collapsed;
-            SparkArea.Visibility = Visibility.Collapsed;
-            return;
+            var url = await _api.GetJoinUrlAsync(row.FullName, CancellationToken.None);
+            if (url is null)
+            {
+                AppendJournal($"Не удалось получить ссылку подключения ({row.Title}).");
+                return;
+            }
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            AppendJournal($"Подключение к {row.Title}: ссылка открыта в Steam.");
         }
-
-        GoalHeader.Visibility = Visibility.Visible;
-        PlayersBar.Visibility = Visibility.Visible;
-        TxtGoalHint.Visibility = Visibility.Visible;
-        SparkHeader.Visibility = Visibility.Visible;
-        SparkArea.Visibility = Visibility.Visible;
-
-        var shortName = ShortServerName(target.Name, target.Key);
-        TxtTargetName.Text = _seed.State.Phase == SeedPhase.OnTarget
-            ? $"Сейчас сидим: {shortName}"
-            : shortName;
-        TxtTargetName.ToolTip = target.Name; // полное имя — в тултипе
-        TxtTargetMode.Text = ServerModeTag(target.Name);
-        TxtTargetMap.Text = string.IsNullOrWhiteSpace(target.Map) ? "" : $"карта: {target.Map}";
-
-        // Прогресс — до ПОРОГА заполнения (при достижении сервер «засеян»),
-        // а не до 100 слотов: это и есть цель набора.
-        var goal = _threshold > 0 ? _threshold : target.MaxPlayers;
-        var left = Math.Max(0, goal - target.Players);
-        TxtTargetPlayers.Text = $"{target.Players} / {goal}";
-        TxtTargetPlayers.ToolTip = $"мест на сервере: {target.MaxPlayers}";
-        TxtGoalHint.Text = left > 0
-            ? $"осталось {left} игроков — сервер считается заполненным при {goal}"
-            : "сервер заполнен — набор на нём завершён";
-        PlayersBar.Maximum = Math.Max(1, goal);
-        AnimateProgress(Math.Clamp(target.Players, 0, goal));
-        OnlineSpark.Maximum = Math.Max(1, target.MaxPlayers);
-        OnlineSpark.Threshold = _threshold > 0 ? _threshold : -1;
-        OnlineSpark.Values = _publicHistory.ToArray();
-        TxtSparkNow.Text = $"сейчас: {target.Players}";
-        SparkHint.Visibility = _publicHistory.Count < 2 ? Visibility.Visible : Visibility.Collapsed;
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppendJournal($"Подключение к {row.Title}: {ex.Message}");
+        }
+        finally
+        {
+            btn.IsEnabled = row.IsOnline;
+        }
     }
 
     /// <summary>Короткое имя сервера: «Сервер №2» вместо полного рекламного названия.</summary>
@@ -396,16 +432,6 @@ public partial class MainWindow : Window
     {
         var m = Regex.Match(name ?? "", @"#\s*\d+\s*\[([^\]]+)\]");
         return m.Success ? m.Groups[1].Value : "";
-    }
-
-    /// <summary>Плавное обновление прогресс-бара онлайна цели.</summary>
-    private void AnimateProgress(double value)
-    {
-        var animation = new DoubleAnimation(value, TimeSpan.FromMilliseconds(450))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-        };
-        PlayersBar.BeginAnimation(System.Windows.Controls.ProgressBar.ValueProperty, animation);
     }
 
     private void TickUi()
@@ -449,19 +475,12 @@ public partial class MainWindow : Window
                 {
                     _windowOpen = status.Window?.Open; // null у старого бэкенда — не знаем
                     if (status.Threshold > 0) _threshold = status.Threshold;
-                    _publicTarget = status.Target;
-                    _allSeeded = status.AllSeeded;
-                    if (status.Target is { } t)
-                    {
-                        _publicHistory.Add(t.Players);
-                        if (_publicHistory.Count > MaxHistoryPoints)
-                            _publicHistory.RemoveRange(0, _publicHistory.Count - MaxHistoryPoints);
-                    }
+                    _lastStatus = status;
                     var text = BuildStatusText(status);
                     Dispatcher.Invoke(() =>
                     {
                         TxtPublicStatus.Text = text;
-                        UpdateTargetCard();
+                        UpdateServersCard();
                         RefreshSeedUi(); // доступность кнопки зависит от окна
                     });
                 }
