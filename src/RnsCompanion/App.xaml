@@ -346,20 +346,43 @@
       </Setter>
     </Style>
 
-    <!-- ═══════════ Тонкий скроллбар ═══════════ -->
+    <!-- ═══════════ Тонкий скроллбар (оверлей: места в разметке не занимает) ═══════════ -->
+    <Style TargetType="ScrollViewer">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollViewer">
+            <Grid>
+              <ScrollContentPresenter/>
+              <ScrollBar x:Name="PART_VerticalScrollBar" Orientation="Vertical"
+                         HorizontalAlignment="Right"
+                         Maximum="{TemplateBinding ScrollableHeight}"
+                         ViewportSize="{TemplateBinding ViewportHeight}"
+                         Value="{TemplateBinding VerticalOffset}"
+                         Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+              <ScrollBar x:Name="PART_HorizontalScrollBar" Orientation="Horizontal"
+                         VerticalAlignment="Bottom"
+                         Maximum="{TemplateBinding ScrollableWidth}"
+                         ViewportSize="{TemplateBinding ViewportWidth}"
+                         Value="{TemplateBinding HorizontalOffset}"
+                         Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}"/>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style TargetType="ScrollBar">
-      <Setter Property="Width" Value="8"/>
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ScrollBar">
-            <Grid Background="Transparent">
+            <Grid x:Name="root" Background="Transparent">
               <Track x:Name="PART_Track" IsDirectionReversed="true">
                 <Track.Thumb>
                   <Thumb>
                     <Thumb.Template>
                       <ControlTemplate TargetType="Thumb">
-                        <Border x:Name="th" CornerRadius="4" Background="#29FFFFFF" Margin="1,2"/>
+                        <Border x:Name="th" CornerRadius="1" Background="#59FFFFFF" Margin="0,1"/>
                       </ControlTemplate>
                     </Thumb.Template>
                   </Thumb>
@@ -372,6 +395,55 @@
                 </Track.DecreaseRepeatButton>
               </Track>
             </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Orientation" Value="Vertical">
+                <Setter TargetName="root" Property="Width" Value="2"/>
+                <Setter TargetName="root" Property="HorizontalAlignment" Value="Right"/>
+              </Trigger>
+              <Trigger Property="Orientation" Value="Horizontal">
+                <Setter TargetName="root" Property="Height" Value="2"/>
+                <Setter TargetName="root" Property="VerticalAlignment" Value="Bottom"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ═══════════ Опасная залитая (Стоп — главное действие блока сессии) ═══════════ -->
+    <Style x:Key="BtnDangerSolid" TargetType="Button">
+      <Setter Property="Background" Value="#FFDC2626"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="FontFamily" Value="{StaticResource FontUi}"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="FontSize" Value="13.5"/>
+      <Setter Property="Padding" Value="20,10"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="10"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#FFEF4444"/>
+                <Setter TargetName="bd" Property="Effect">
+                  <Setter.Value>
+                    <DropShadowEffect Color="#FFEF4444" BlurRadius="14" ShadowDepth="0" Opacity="0.35"/>
+                  </Setter.Value>
+                </Setter>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="#FFB91C1C"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="#29EF4444"/>
+                <Setter Property="Foreground" Value="#61F5F8FF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>

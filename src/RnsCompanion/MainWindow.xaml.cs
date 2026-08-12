@@ -74,6 +74,7 @@ public partial class MainWindow : Window
 
         // Навигация по страницам (сайдбар)
         NavSeed.Checked += (_, _) => ShowPage(Page.Seed);
+        NavNews.Checked += (_, _) => ShowPage(Page.News);
         NavVip.Checked += (_, _) => ShowPage(Page.Vip);
         NavJournal.Checked += (_, _) => ShowPage(Page.Journal);
 
@@ -94,6 +95,16 @@ public partial class MainWindow : Window
         BtnStop.Click += async (_, _) => await StopSeedAsync();
         BtnSettings.Click += (_, _) => OpenSettings();
         BtnSite.Click += (_, _) => OpenUrl(_settings.BaseUrl + "/seed");
+        BtnDiscord.Click += (_, _) => OpenUrl("https://discord.gg/rn-server");
+        BtnNewsBack.Click += (_, _) =>
+        {
+            NewsArticleView.Visibility = Visibility.Collapsed;
+            NewsListView.Visibility = Visibility.Visible;
+        };
+        BtnNewsSource.Click += (_, _) =>
+        {
+            if (_openArticleSource is { Length: > 0 } url) OpenUrl(url);
+        };
         BtnBuyVip.Click += async (_, _) => await BuyVipAsync();
         BtnUpdate.Click += async (_, _) => await ApplyUpdateAsync();
         BtnUpdateLater.Click += (_, _) =>
@@ -230,19 +241,23 @@ public partial class MainWindow : Window
 
     // ─────────────────────────── Навигация (сайдбар) ───────────────────────────
 
-    private enum Page { Seed, Vip, Journal }
+    private enum Page { Seed, News, Vip, Journal }
 
     private void ShowPage(Page page)
     {
         PageSeed.Visibility = page == Page.Seed ? Visibility.Visible : Visibility.Collapsed;
+        PageNews.Visibility = page == Page.News ? Visibility.Visible : Visibility.Collapsed;
         PageVip.Visibility = page == Page.Vip ? Visibility.Visible : Visibility.Collapsed;
         PageJournal.Visibility = page == Page.Journal ? Visibility.Visible : Visibility.Collapsed;
         TxtPageTitle.Text = page switch
         {
+            Page.News => "Новости Squad",
             Page.Vip => "VIP и бонусы",
             Page.Journal => "Журнал",
             _ => "Набор игроков",
         };
+        if (page == Page.News)
+            _ = LoadNewsAsync();
     }
 
     private static string? ExtractCode(string uri)
@@ -254,6 +269,112 @@ public partial class MainWindow : Window
         marker = "code=";
         idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
         return idx >= 0 ? Uri.UnescapeDataString(uri[(idx + marker.Length)..].TrimEnd('/')) : null;
+    }
+
+    // ─────────────────────────── Новости Squad ───────────────────────────
+
+    private sealed class NewsRow
+    {
+        public string Slug { get; set; } = "";
+        public string TitleRu { get; set; } = "";
+        public string ExcerptRu { get; set; } = "";
+        public string? CoverImage { get; set; }
+        public string Category { get; set; } = "";
+        public string DateText { get; set; } = "";
+        public string? SourceUrl { get; set; }
+    }
+
+    private static readonly TimeSpan NewsCacheLifetime = TimeSpan.FromMinutes(15);
+    private DateTime _newsLoadedAt = DateTime.MinValue;
+    private bool _newsLoading;
+    private string? _openArticleSource;
+
+    private async Task LoadNewsAsync(bool force = false)
+    {
+        if (_newsLoading) return;
+        if (!force && DateTime.UtcNow - _newsLoadedAt < NewsCacheLifetime) return;
+        _newsLoading = true;
+        TxtNewsHint.Text = "Загружаю новости…";
+        TxtNewsHint.Visibility = Visibility.Visible;
+        try
+        {
+            var resp = await _api.GetNewsAsync(10, CancellationToken.None);
+            var items = resp?.Items ?? new List<NewsItemSummary>();
+            NewsList.ItemsSource = items.Select(n => new NewsRow
+            {
+                Slug = n.Slug ?? "",
+                TitleRu = string.IsNullOrWhiteSpace(n.TitleRu) ? "Без названия" : n.TitleRu!,
+                ExcerptRu = n.ExcerptRu ?? "",
+                CoverImage = string.IsNullOrWhiteSpace(n.CoverImage) ? null : n.CoverImage,
+                Category = string.IsNullOrWhiteSpace(n.Category) ? "Новости" : n.Category!,
+                DateText = n.PublishedAt.ToLocalTime().ToString("dd.MM.yyyy"),
+                SourceUrl = n.SourceUrl,
+            }).ToList();
+            _newsLoadedAt = DateTime.UtcNow;
+            TxtNewsHint.Visibility = items.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+            TxtNewsHint.Text = "Новостей пока нет.";
+        }
+        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        {
+            LogService.Warn($"Новости: {ex.Message}");
+            TxtNewsHint.Text = "Не удалось загрузить новости — попробуйте позже.";
+        }
+        finally
+        {
+            _newsLoading = false;
+        }
+    }
+
+    private async void NewsCard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: NewsRow row }) return;
+        if (string.IsNullOrWhiteSpace(row.Slug)) return;
+        await OpenNewsItemAsync(row);
+    }
+
+    /// <summary>Border.CornerRadius не обрезает содержимое по скруглению —
+    /// задаём Clip-геометрию вручную (тот же приём, что у RootBorder).</summary>
+    private void NewsCard_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Border b)
+            b.Clip = new RectangleGeometry(new Rect(0, 0, b.ActualWidth, b.ActualHeight), 12, 12);
+    }
+    private async Task OpenNewsItemAsync(NewsRow row)
+    {
+        NewsListView.Visibility = Visibility.Collapsed;
+        NewsArticleView.Visibility = Visibility.Visible;
+        TxtArticleTitle.Text = row.TitleRu;
+        TxtArticleDate.Text = row.DateText;
+        _openArticleSource = row.SourceUrl;
+        BtnNewsSource.Visibility = row.SourceUrl is { Length: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        ArticleBody.Children.Clear();
+        ArticleBody.Children.Add(new System.Windows.Controls.TextBlock
+        {
+            Text = "Загружаю статью…",
+            Style = (Style)FindResource("HintText"),
+        });
+        try
+        {
+            var resp = await _api.GetNewsItemAsync(row.Slug, CancellationToken.None);
+            ArticleBody.Children.Clear();
+            foreach (var el in NewsHtmlRenderer.Render(resp?.Item?.ContentHtmlRu ?? ""))
+                ArticleBody.Children.Add(el);
+            if (resp?.Item?.SourceUrl is { Length: > 0 } src)
+            {
+                _openArticleSource = src;
+                BtnNewsSource.Visibility = Visibility.Visible;
+            }
+        }
+        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        {
+            LogService.Warn($"Новости: статья {row.Slug}: {ex.Message}");
+            ArticleBody.Children.Clear();
+            ArticleBody.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "Не удалось загрузить статью — откройте оригинал на Steam.",
+                Style = (Style)FindResource("HintText"),
+            });
+        }
     }
 
     private static bool IsJwtExpired(string token)
@@ -483,12 +604,15 @@ public partial class MainWindow : Window
         var session = _seed.State.Session;
         if (_seed.State.Phase == SeedPhase.OnTarget && session is not null)
         {
+            var carry = TimeSpan.FromMinutes(_seed.State.CarryMinutes);
             var elapsed = DateTime.UtcNow - session.StartedAt.ToUniversalTime();
             if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-            TxtTimer.Text = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+            var total = carry + elapsed;
+            TxtTimer.Text = $"{(int)total.TotalHours:00}:{total.Minutes:00}:{total.Seconds:00}";
             TxtTimer.Foreground = (Brush)FindResource("Text0");
             // Оценка бонусов: минуты × bonusDisplayRate (начисляет сервер); «+0» не показываем.
-            var minutes = Math.Max(session.Minutes, (int)elapsed.TotalMinutes);
+            var minutes = _seed.State.CarryMinutes +
+                          Math.Max(session.Minutes, (int)elapsed.TotalMinutes);
             var estimate = minutes * _seed.State.BonusRate;
             TxtBonuses.Text = estimate > 0 ? $"нафармлено ~+{estimate} бонусов" : "";
         }
@@ -700,7 +824,7 @@ public partial class MainWindow : Window
         var servers = status.Servers ?? new List<ServerStatusInfo>();
         var online = servers.Count(s => string.Equals(s.Status, "ok", StringComparison.OrdinalIgnoreCase));
         var target = status.Target is { } t
-            ? $"цель: {t.Name} ({t.Players}/{t.MaxPlayers})"
+            ? $"цель: {ShortServerName(t.Name, t.Key)} ({t.Players}/{t.MaxPlayers})"
             : "цели нет — все серверы заполнены";
         var window = status.Window is { Open: false } w
             ? $"Набор начнётся {w.DescribeOpening()} · "

@@ -115,3 +115,37 @@ public sealed class AuthState
     public string Token { get; set; } = "";
     public DateTime SavedAtUtc { get; set; } = DateTime.UtcNow;
 }
+
+/// <summary>Элемент списка новостей Squad (GET /api/news, публичный).</summary>
+public sealed class NewsItemSummary
+{
+    [JsonPropertyName("slug")] public string? Slug { get; set; }
+    [JsonPropertyName("titleRu")] public string? TitleRu { get; set; }
+    [JsonPropertyName("excerptRu")] public string? ExcerptRu { get; set; }
+    [JsonPropertyName("coverImage")] public string? CoverImage { get; set; }
+    [JsonPropertyName("publishedAt")] public DateTime PublishedAt { get; set; }
+    [JsonPropertyName("sourceUrl")] public string? SourceUrl { get; set; }
+    [JsonPropertyName("category")] public string? Category { get; set; }
+}
+
+/// <summary>GET /api/news → { items }</summary>
+public sealed class NewsListResponse
+{
+    [JsonPropertyName("items")] public List<NewsItemSummary>? Items { get; set; }
+}
+
+/// <summary>Полная статья (GET /api/news/{slug}, публичный).</summary>
+public sealed class NewsItemDetail
+{
+    [JsonPropertyName("slug")] public string? Slug { get; set; }
+    [JsonPropertyName("titleRu")] public string? TitleRu { get; set; }
+    [JsonPropertyName("contentHtmlRu")] public string? ContentHtmlRu { get; set; }
+    [JsonPropertyName("publishedAt")] public DateTime PublishedAt { get; set; }
+    [JsonPropertyName("sourceUrl")] public string? SourceUrl { get; set; }
+}
+
+/// <summary>GET /api/news/{slug} → { item }</summary>
+public sealed class NewsItemResponse
+{
+    [JsonPropertyName("item")] public NewsItemDetail? Item { get; set; }
+}

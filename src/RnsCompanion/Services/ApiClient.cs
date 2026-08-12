@@ -99,6 +99,14 @@ internal sealed class ApiClient : IDisposable
     public Task<VipMyResponse?> GetVipMyAsync(CancellationToken ct) =>
         GetAsync<VipMyResponse>("/api/vip/my", ct);
 
+    /// <summary>GET /api/news?limit=N — список новостей Squad (публичный).</summary>
+    public Task<NewsListResponse?> GetNewsAsync(int limit, CancellationToken ct) =>
+        GetAsync<NewsListResponse>($"/api/news?limit={limit}", ct);
+
+    /// <summary>GET /api/news/{slug} — полная статья (публичный).</summary>
+    public Task<NewsItemResponse?> GetNewsItemAsync(string slug, CancellationToken ct) =>
+        GetAsync<NewsItemResponse>($"/api/news/{Uri.EscapeDataString(slug)}", ct);
+
     /// <summary>POST /api/vip/buy (CSRF) — купить/продлить VIP за бонусы.</summary>
     public Task BuyVipAsync(CancellationToken ct) =>
         PostWithCsrfAsync("/api/vip/buy", new { }, ct);

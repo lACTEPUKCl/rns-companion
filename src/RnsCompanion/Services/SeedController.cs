@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
+using System.Text.Json;
 using RnsCompanion.Models;
 
 namespace RnsCompanion.Services;
@@ -52,6 +54,11 @@ internal sealed class SeedState
     public int BonusRate { get; set; } = 5;
     public string StatusText { get; set; } = "Набор выключен";
     public IReadOnlyList<double> PlayersHistory { get; set; } = Array.Empty<double>();
+
+    /// <summary>Минуты, накопленные в ЗАКРЫТЫХ сервером сессиях этого запуска
+    /// (сервер заводит новую сессию при смене целевого сервера — UI показывает
+    /// сумму: перенос + текущая сессия).</summary>
+    public int CarryMinutes { get; set; }
 }
 
 /// <summary>
@@ -99,6 +106,65 @@ internal sealed class SeedController
         _settings = settings;
     }
 
+    // Накопитель минут между серверными сессиями: сервер закрывает сессию и
+    // заводит новую при смене цели, а UI должен показывать суммарное время сида.
+    // Переживает перезапуск приложения (seed-carry.json в DataDir).
+    private DateTime? _lastSessionStartedAt;
+    private int _lastSessionMinutes;
+    private int _carryMinutes;
+
+    private sealed class CarryState
+    {
+        public int CarryMinutes { get; set; }
+        public DateTime LastSessionStartedAt { get; set; }
+        public int LastSessionMinutes { get; set; }
+    }
+
+    private static readonly string CarryPath = Path.Combine(LogService.DataDir, "seed-carry.json");
+
+    private void ResetSessionCarry()
+    {
+        _lastSessionStartedAt = null;
+        _lastSessionMinutes = 0;
+        _carryMinutes = 0;
+        State.CarryMinutes = 0;
+        try { File.Delete(CarryPath); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private void PersistCarry()
+    {
+        try
+        {
+            File.WriteAllBytes(CarryPath, JsonSerializer.SerializeToUtf8Bytes(new CarryState
+            {
+                CarryMinutes = _carryMinutes,
+                LastSessionStartedAt = _lastSessionStartedAt ?? DateTime.MinValue,
+                LastSessionMinutes = _lastSessionMinutes,
+            }));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>Подтянуть накопитель после перезапуска приложения, если сид продолжается.</summary>
+    private void LoadCarry()
+    {
+        try
+        {
+            if (!File.Exists(CarryPath)) return;
+            var c = JsonSerializer.Deserialize<CarryState>(File.ReadAllBytes(CarryPath));
+            if (c is null) return;
+            _carryMinutes = c.CarryMinutes;
+            _lastSessionStartedAt = c.LastSessionStartedAt == DateTime.MinValue
+                ? null : c.LastSessionStartedAt;
+            _lastSessionMinutes = c.LastSessionMinutes;
+            State.CarryMinutes = _carryMinutes;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
+    }
+
     /// <summary>Включить режим набора (POST /api/seed/start) и запустить цикл опроса.
     /// Если окно набора ещё закрыто — ждём его открытия и стартуем сами.</summary>
     public async Task StartAsync(bool scheduled, CancellationToken ct)
@@ -111,6 +177,7 @@ internal sealed class SeedController
         _lastJoinKey = null;
         _lastJoinUtc = null;
         _history.Clear();
+        ResetSessionCarry();
 
         try
         {
@@ -223,6 +290,7 @@ internal sealed class SeedController
         _scheduledMode = false;
         _targetWasSeen = my.Target is not null;
         _noJoinUntilUtc = InitialNoJoinUntilUtc();
+        LoadCarry(); // сид продолжается — подтягиваем накопленные минуты прошлых сессий
         LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
         UpdateState(my);
         _ = Task.Run(() => RunLoopAsync(_loop.Token));
@@ -242,6 +310,7 @@ internal sealed class SeedController
         // Подмена конфига здесь НЕ откатывается: если игра ещё идёт, она перезапишет
         // INI при выходе — восстановление сделает exit-watcher после исчезновения процесса.
 
+        ResetSessionCarry();
         State.Phase = SeedPhase.Idle;
         State.Session = null;
         State.StatusText = "Набор выключен";
@@ -368,6 +437,25 @@ internal sealed class SeedController
         State.Session = my.Session;
         State.BonusRate = my.BonusDisplayRate is > 0 ? my.BonusDisplayRate.Value : 5;
 
+        // Сервер закрывает сессию при смене цели и заводит новую — переносим
+        // минуты закрытой в накопитель, чтобы таймер и бонусы шли за весь сид.
+        if (my.Session is { } sess)
+        {
+            if (_lastSessionStartedAt != sess.StartedAt)
+            {
+                if (_lastSessionStartedAt is not null)
+                    _carryMinutes += _lastSessionMinutes;
+                _lastSessionStartedAt = sess.StartedAt;
+                _lastSessionMinutes = sess.Minutes;
+            }
+            else
+            {
+                _lastSessionMinutes = Math.Max(_lastSessionMinutes, sess.Minutes);
+            }
+            State.CarryMinutes = _carryMinutes;
+            PersistCarry();
+        }
+
         if (my.Target is not null)
         {
             _history.Add(my.Target.Players);
@@ -379,7 +467,7 @@ internal sealed class SeedController
         if (my.OnTarget && my.Session is not null)
         {
             State.Phase = SeedPhase.OnTarget;
-            State.StatusText = "Вы на целевом сервере — идёт сид";
+            State.StatusText = "Вы на целевом сервере"; // плашка справа уже говорит «ИДЁТ СИД»
         }
         else
         {
@@ -411,6 +499,7 @@ internal sealed class SeedController
         var s = _settings();
 
         StopLoop();
+        ResetSessionCarry(); // сид завершён — следующий запуск начнёт счёт с нуля
 
         // Сначала закрываем игру — exit-watcher восстановит конфиг ПОСЛЕ
         // полного выхода процесса (игра допишет свой INI, потом watcher вернёт оригинал).
