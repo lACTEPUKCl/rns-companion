@@ -117,13 +117,20 @@ public partial class MainWindow : Window
         _ = Task.Run(() => UpdateCheckLoopAsync(_statusPoll.Token));
 
         if (scheduledLaunch)
-        {
-            AppendJournal("Запуск по расписанию: автоматически включаю набор…");
-            if (_api.Token is null)
-                AppendJournal("Нет сохранённой авторизации — войдите вручную, затем расписание будет работать.");
-            else
-                _ = StartSeedAsync(scheduled: true);
-        }
+            HandleScheduledCommand();
+    }
+
+    /// <summary>
+    /// Запуск по расписанию: из аргумента /scheduled при старте или проброшенный
+    /// от второго экземпляра, если приложение уже было запущено (single-instance).
+    /// </summary>
+    public void HandleScheduledCommand()
+    {
+        LogService.Info("Запуск по расписанию: автоматически включаю набор…");
+        if (_api.Token is null)
+            AppendJournal("Нет сохранённой авторизации — войдите вручную, затем расписание будет работать.");
+        else
+            _ = StartSeedAsync(scheduled: true);
     }
 
     // ─────────────────────────── Авторизация ───────────────────────────
@@ -291,11 +298,13 @@ public partial class MainWindow : Window
         }
         catch (ApiException ex) when (ex.IsAuthError)
         {
+            LogService.Warn("Запуск набора: сессия истекла — требуется повторный вход.");
             AppendJournal("Сессия истекла — войдите заново.");
             ShowLoggedOut();
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {
+            LogService.Warn($"Запуск набора не удался: {ex.Message}");
             AppendJournal($"Не удалось включить режим: {ex.Message}");
         }
         finally

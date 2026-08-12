@@ -13,6 +13,13 @@ internal static class PowerService
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam,
+        uint flags, uint timeout, out IntPtr result);
+
+    private const uint SmtoAbortIfHung = 0x0002;
+
     [DllImport("powrprof.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetSuspendState(
@@ -25,7 +32,10 @@ internal static class PowerService
     {
         try
         {
-            SendMessage(HwndBroadcast, WmSysCommand, ScMonitorPower, MonitorPowerOff);
+            // Не SendMessage: broadcast ждёт ответа от ВСЕХ окон, и одно повисшее
+            // окно в системе вешает наш UI-поток навсегда. Таймаут 2 с.
+            SendMessageTimeout(HwndBroadcast, WmSysCommand, ScMonitorPower, MonitorPowerOff,
+                SmtoAbortIfHung, 2000, out _);
             LogService.Info("Мониторы погашены (SC_MONITORPOWER).");
         }
         catch (Exception ex)

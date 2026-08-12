@@ -9,6 +9,10 @@ public partial class App : Application
     public const string ProtocolScheme = "rnscompanion";
     private const string SingleInstanceName = "RNS.Companion.SingleInstance";
 
+    /// <summary>Команда, которую второй экземпляр передаёт первому по named pipe,
+    /// когда планировщик запустил приложение с /scheduled, а оно уже работает.</summary>
+    internal const string ScheduledCommand = "/scheduled";
+
     private SingleInstanceService? _singleInstance;
 
     public static bool ScheduledLaunch { get; private set; }
@@ -47,7 +51,7 @@ public partial class App : Application
         LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (аргументы: {string.Join(" ", e.Args)})" : ""));
 
         ScheduledLaunch = e.Args.Any(a =>
-            string.Equals(a, "/scheduled", StringComparison.OrdinalIgnoreCase));
+            string.Equals(a, ScheduledCommand, StringComparison.OrdinalIgnoreCase));
 
         _singleInstance = new SingleInstanceService(SingleInstanceName);
         var protocolUri = e.Args.FirstOrDefault(a =>
@@ -55,12 +59,13 @@ public partial class App : Application
 
         if (!_singleInstance.IsPrimary)
         {
-            // Второй экземпляр (например, вызван браузером по rnscompanion://) —
-            // передаём URI первому и завершаемся.
-            if (protocolUri is not null)
+            // Второй экземпляр (вызван браузером по rnscompanion:// или
+            // планировщиком с /scheduled) — передаём команду первому и завершаемся.
+            var message = protocolUri ?? (ScheduledLaunch ? ScheduledCommand : null);
+            if (message is not null)
             {
-                try { _singleInstance.Forward(protocolUri); }
-                catch (Exception ex) { LogService.Warn($"Не удалось передать URI первому экземпляру: {ex.Message}"); }
+                try { _singleInstance.Forward(message); }
+                catch (Exception ex) { LogService.Warn($"Не удалось передать команду первому экземпляру: {ex.Message}"); }
             }
             Shutdown();
             return;
@@ -74,8 +79,14 @@ public partial class App : Application
         catch (Exception ex) { LogService.Warn($"Восстановление GameUserSettings.ini не удалось: {ex.Message}"); }
 
         var window = new MainWindow(ScheduledLaunch);
-        _singleInstance.MessageReceived += uri =>
-            window.Dispatcher.Invoke(() => window.HandleProtocolUri(uri));
+        _singleInstance.MessageReceived += message =>
+            window.Dispatcher.Invoke(() =>
+            {
+                if (message.Equals(ScheduledCommand, StringComparison.OrdinalIgnoreCase))
+                    window.HandleScheduledCommand();
+                else
+                    window.HandleProtocolUri(message);
+            });
         MainWindow = window;
         window.Show();
 
