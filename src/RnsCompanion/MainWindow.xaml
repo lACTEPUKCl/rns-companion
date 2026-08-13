@@ -247,9 +247,10 @@
 
           <!-- Новости Squad -->
           <Grid x:Name="PageNews" Visibility="Collapsed">
-            <!-- список новостей -->
-            <ScrollViewer x:Name="NewsListView" VerticalScrollBarVisibility="Auto">
-              <Border Style="{StaticResource Card}">
+            <!-- список новостей: скруглённая рамка снаружи (не скроллится),
+                 контент режется по её дуге при любой прокрутке -->
+            <Border Style="{StaticResource Card}" SizeChanged="NewsCard_SizeChanged">
+              <ScrollViewer x:Name="NewsListView" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                   <TextBlock x:Name="TxtNewsHint" Style="{StaticResource HintText}"
                              Text="Загружаю новости…"/>
@@ -314,8 +315,8 @@
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
                 </StackPanel>
-              </Border>
-            </ScrollViewer>
+              </ScrollViewer>
+            </Border>
 
             <!-- читалка статьи -->
             <Grid x:Name="NewsArticleView" Visibility="Collapsed">
@@ -376,9 +377,15 @@
               <TextBlock Text="ЖУРНАЛ" Style="{StaticResource SectionTitle}"/>
               <ListBox x:Name="JournalList" Grid.Row="1" Margin="0,8,0,0"
                        Background="Transparent" BorderThickness="0"
-                       FontFamily="{StaticResource FontMono}" FontSize="11.5" Foreground="#B8F5F8FF"
-                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                        ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                               FontFamily="{StaticResource FontMono}" FontSize="11.5"
+                               Foreground="#B8F5F8FF"/>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
                 <ListBox.ItemContainerStyle>
                   <Style TargetType="ListBoxItem">
                     <Setter Property="Padding" Value="0,1"/>

@@ -130,11 +130,12 @@
             </StackPanel>
           </Border>
 
-          <!-- Кнопки -->
+          <!-- Автосохранение -->
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="BtnCancel" Content="Отмена" Style="{StaticResource BtnGhost}"
-                    Margin="0,0,10,0"/>
-            <Button x:Name="BtnSave" Content="Сохранить" Style="{StaticResource BtnAmber}"/>
+            <TextBlock x:Name="TxtSaved" Style="{StaticResource HintText}" FontSize="11"
+                       Foreground="{StaticResource Green}" VerticalAlignment="Center"/>
+            <TextBlock Style="{StaticResource HintText}" FontSize="11" VerticalAlignment="Center"
+                       Margin="8,0,0,0" Text="Изменения сохраняются автоматически"/>
           </StackPanel>
         </StackPanel>
       </ScrollViewer>

@@ -77,6 +77,10 @@ internal sealed class SeedController
     private string? _lastJoinKey;
     private DateTime? _lastJoinUtc;
     private bool _targetWasSeen;
+    // Были ли мы реально на цели в этом запуске — от этого зависят побочные
+    // эффекты завершения (закрыть игру, сон): без него открытие приложения
+    // при протухшем enabled=true на сервере уводило бы ПК в сон на ровном месте.
+    private bool _wasOnTarget;
     private bool _scheduledMode;
     private readonly List<double> _history = new();
     // Пауза перед первым join после старта/возобновления — только если игра уже
@@ -174,6 +178,7 @@ internal sealed class SeedController
         _loop = new CancellationTokenSource();
         _scheduledMode = scheduled;
         _targetWasSeen = false;
+        _wasOnTarget = false;
         _lastJoinKey = null;
         _lastJoinUtc = null;
         _history.Clear();
@@ -289,6 +294,7 @@ internal sealed class SeedController
         _loop = new CancellationTokenSource();
         _scheduledMode = false;
         _targetWasSeen = my.Target is not null;
+        _wasOnTarget = my.OnTarget; // подхват посреди сида — мы УЖЕ на цели
         _noJoinUntilUtc = InitialNoJoinUntilUtc();
         LoadCarry(); // сид продолжается — подтягиваем накопленные минуты прошлых сессий
         LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
@@ -466,6 +472,7 @@ internal sealed class SeedController
 
         if (my.OnTarget && my.Session is not null)
         {
+            _wasOnTarget = true;
             State.Phase = SeedPhase.OnTarget;
             State.StatusText = "Вы на целевом сервере"; // плашка справа уже говорит «ИДЁТ СИД»
         }
@@ -501,17 +508,31 @@ internal sealed class SeedController
         StopLoop();
         ResetSessionCarry(); // сид завершён — следующий запуск начнёт счёт с нуля
 
-        // Сначала закрываем игру — exit-watcher восстановит конфиг ПОСЛЕ
-        // полного выхода процесса (игра допишет свой INI, потом watcher вернёт оригинал).
-        if (s.CloseGameAfterSeed)
-            await GameProcessService.CloseGameAsync();
+        // Выключаем режим на сервере: иначе enabled=true переживает завершение,
+        // и каждый запуск приложения «возобновляет» уже законченный набор.
+        try { await _api.StopSeedAsync(CancellationToken.None); }
+        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        {
+            LogService.Warn($"POST stop при завершении не прошёл ({ex.Message}).");
+        }
+
+        // Побочные эффекты (закрыть игру, сон) — только если реально сидели
+        // в этом запуске. Иначе открытие приложения при протухшем enabled=true
+        // гасило бы игру и уводило ПК в сон на ровном месте.
+        if (_wasOnTarget)
+        {
+            // Сначала закрываем игру — exit-watcher восстановит конфиг ПОСЛЕ
+            // полного выхода процесса (игра допишет свой INI, потом watcher вернёт оригинал).
+            if (s.CloseGameAfterSeed)
+                await GameProcessService.CloseGameAsync();
+        }
 
         State.Phase = SeedPhase.Completed;
         State.Session = null;
         State.StatusText = "Все серверы заполнены — отличная работа!";
         StateChanged?.Invoke();
 
-        if (s.SleepAfterSeed)
+        if (_wasOnTarget && s.SleepAfterSeed)
         {
             // Даём UI показать финальное состояние, потом уводим ПК в сон.
             await Task.Delay(TimeSpan.FromSeconds(15));

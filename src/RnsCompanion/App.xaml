@@ -354,13 +354,13 @@
             <Grid>
               <ScrollContentPresenter/>
               <ScrollBar x:Name="PART_VerticalScrollBar" Orientation="Vertical"
-                         HorizontalAlignment="Right"
+                         HorizontalAlignment="Right" Margin="0,6,0,6"
                          Maximum="{TemplateBinding ScrollableHeight}"
                          ViewportSize="{TemplateBinding ViewportHeight}"
                          Value="{TemplateBinding VerticalOffset}"
                          Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
               <ScrollBar x:Name="PART_HorizontalScrollBar" Orientation="Horizontal"
-                         VerticalAlignment="Bottom"
+                         VerticalAlignment="Bottom" Margin="6,0,6,0"
                          Maximum="{TemplateBinding ScrollableWidth}"
                          ViewportSize="{TemplateBinding ViewportWidth}"
                          Value="{TemplateBinding HorizontalOffset}"

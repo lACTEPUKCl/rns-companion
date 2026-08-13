@@ -336,8 +336,9 @@ public partial class MainWindow : Window
     /// задаём Clip-геометрию вручную (тот же приём, что у RootBorder).</summary>
     private void NewsCard_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (sender is System.Windows.Controls.Border b)
-            b.Clip = new RectangleGeometry(new Rect(0, 0, b.ActualWidth, b.ActualHeight), 12, 12);
+        if (sender is not System.Windows.Controls.Border b) return;
+        var r = b.CornerRadius.TopLeft;
+        b.Clip = new RectangleGeometry(new Rect(0, 0, b.ActualWidth, b.ActualHeight), r, r);
     }
     private async Task OpenNewsItemAsync(NewsRow row)
     {
@@ -836,15 +837,17 @@ public partial class MainWindow : Window
 
     private void OpenSettings()
     {
-        var window = new SettingsWindow(_settings) { Owner = this };
-        if (window.ShowDialog() == true)
-        {
-            _settings = window.Result;
-            _settingsStore.Save(_settings);
-            _api.BaseUrl = _settings.BaseUrl;
-            NavJournal.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
-            AppendJournal("Настройки сохранены.");
-        }
+        // Автосохранение: окно присылает настройки при каждом изменении.
+        var window = new SettingsWindow(_settings, ApplySettings) { Owner = this };
+        window.ShowDialog();
+    }
+
+    private void ApplySettings(AppSettings s)
+    {
+        _settings = s;
+        _settingsStore.Save(s);
+        _api.BaseUrl = s.BaseUrl;
+        NavJournal.Visibility = s.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void AppendJournal(string line)
