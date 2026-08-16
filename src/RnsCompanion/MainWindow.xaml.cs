@@ -406,7 +406,7 @@ public partial class MainWindow : Window
 
     // ─────────────────────────── Набор ───────────────────────────
 
-    private async Task StartSeedAsync(bool scheduled)
+    private async Task StartSeedAsync(bool scheduled, int retryAttempt = 0)
     {
         if (_seedStartInProgress || _seed.IsRunning) return;
         _seedStartInProgress = true;
@@ -428,12 +428,28 @@ public partial class MainWindow : Window
         {
             LogService.Warn($"Запуск набора не удался: {ex.Message}");
             AppendJournal($"Не удалось включить режим: {ex.Message}");
+            // Запуск по расписанию не должен умирать от одной временной ошибки
+            // (502 от сервера, сеть ещё не поднялась после пробуждения ПК).
+            if (scheduled && retryAttempt < MaxScheduledRetries)
+                _ = RetryScheduledStartAsync(retryAttempt + 1);
         }
         finally
         {
             _seedStartInProgress = false;
             RefreshSeedUi();
         }
+    }
+
+    /// <summary>Сколько раз повторяем запуск по расписанию после временной ошибки
+    /// (интервал 2 мин → покрываем ~10 минут нестабильности после пробуждения).</summary>
+    private const int MaxScheduledRetries = 5;
+
+    private async Task RetryScheduledStartAsync(int attempt)
+    {
+        await Task.Delay(TimeSpan.FromMinutes(2));
+        if (_seed.IsRunning || _seedStartInProgress) return; // уже запустился (ретрай/вручную)
+        LogService.Info($"Повторный запуск набора по расписанию (попытка {attempt + 1} из {MaxScheduledRetries + 1})…");
+        await StartSeedAsync(scheduled: true, retryAttempt: attempt);
     }
 
     private async Task StopSeedAsync()
@@ -745,10 +761,12 @@ public partial class MainWindow : Window
         try
         {
             await UpdateService.DownloadAndSwapAsync(info, CancellationToken.None, progress);
-            TxtUpdate.Text = $"Обновление v{info.Version} установлено — перезапускаюсь…";
+            TxtUpdate.Text = $"Обновление v{info.Version} скачано — приложение закроется и откроется само. " +
+                             "Не запускайте его вручную, подождите ~1 минуту.";
             LogService.Info("Update: всё готово, закрываю приложение для подмены exe");
-            AppendJournal($"Обновление v{info.Version} готово — перезапускаюсь для установки.");
-            await Task.Delay(800);
+            AppendJournal($"Обновление v{info.Version} готово — перезапускаюсь для установки. " +
+                          "Не запускайте приложение вручную — оно откроется само.");
+            await Task.Delay(2500); // даём прочитать предупреждение перед закрытием
             _reallyClose = true;
             Close();
         }

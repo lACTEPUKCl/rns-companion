@@ -26,12 +26,27 @@ internal sealed class SingleInstanceService : IDisposable
             _ = ListenAsync();
     }
 
+    /// <summary>Передать команду первому экземпляру. Сразу после пробуждения ПК
+    /// (запуск из планировщика в 06:00) слушатель первого может быть ещё не готов —
+    /// повторяем попытки до ~1 минуты, прежде чем сдаться.</summary>
     public void Forward(string message)
     {
-        using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out);
-        client.Connect(3000);
-        using var writer = new StreamWriter(client, Encoding.UTF8) { AutoFlush = true };
-        writer.WriteLine(message);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out);
+                client.Connect(3000);
+                using var writer = new StreamWriter(client, Encoding.UTF8) { AutoFlush = true };
+                writer.WriteLine(message);
+                return;
+            }
+            catch (Exception ex) when (ex is TimeoutException or IOException)
+            {
+                if (attempt >= 20) throw;
+                Thread.Sleep(3000);
+            }
+        }
     }
 
     private async Task ListenAsync()
@@ -49,7 +64,16 @@ internal sealed class SingleInstanceService : IDisposable
                     MessageReceived?.Invoke(message);
             }
             catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) when (_stop.IsCancellationRequested) { }
             catch (IOException) { }
+            catch (Exception ex)
+            {
+                // Слушатель не должен умирать молча от непредвиденного исключения —
+                // иначе проброс /scheduled от планировщика теряется без следа.
+                LogService.Warn($"SingleInstance: ошибка слушателя пайпа: {ex.GetType().Name}: {ex.Message}");
+                try { await Task.Delay(1000, _stop.Token); }
+                catch (OperationCanceledException) { }
+            }
         }
     }
 

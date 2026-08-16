@@ -114,6 +114,8 @@ internal static class UpdateService
         // Скрипт ждёт завершения нашего PID, подменяет exe и перезапускает его.
         // Задержки через ping (timeout ломается без консоли), move — с ретраями:
         // свежескачанный exe могут недолго держать Defender/индексатор.
+        // taskkill перед подменой: если пользователь не дождался и запустил
+        // приложение вручную, работающий старый exe блокирует move — прибиваем его.
         var pid = Environment.ProcessId;
         var script = Path.Combine(dir, "apply-update.cmd");
         await File.WriteAllTextAsync(script,
@@ -121,6 +123,7 @@ internal static class UpdateService
             ":wait\r\n" +
             $"tasklist /FI \"PID eq {pid}\" | find \"{pid}\" >nul\r\n" +
             "if %errorlevel%==0 ( ping -n 2 127.0.0.1 >nul & goto wait )\r\n" +
+            $"taskkill /F /IM \"{ExeName}\" >nul 2>&1\r\n" +
             "set /a tries=0\r\n" +
             ":move\r\n" +
             $"move /y \"{newExe}\" \"{currentExe}\" >nul 2>&1\r\n" +

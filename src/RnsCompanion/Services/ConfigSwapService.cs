@@ -227,6 +227,11 @@ internal sealed class ConfigSwapService
                 LogService.Error($"ConfigSwap: не удалось записать {iniPath}", ex);
                 return; // маркер оставляем — попробуем при следующем запуске/входе
             }
+            catch (UnauthorizedAccessException ex)
+            {
+                LogService.Error($"ConfigSwap: не удалось записать {iniPath}", ex);
+                return; // маркер оставляем — попробуем при следующем запуске/входе
+            }
         }
 
         // Оба бэкапа битые/отсутствуют — текущий файл НЕ трогаем, маркер оставляем.
@@ -271,6 +276,12 @@ internal sealed class ConfigSwapService
                         RestoreIfNeeded("игра завершилась");
                 }
             }
+            catch (Exception ex)
+            {
+                // Watcher не должен умирать молча — иначе восстановление потеряно
+                // до следующего запуска приложения/входа в систему.
+                LogService.Warn($"ConfigSwap: exit-watcher завершился с ошибкой: {ex.GetType().Name}: {ex.Message}");
+            }
             finally
             {
                 _watcherRunning = 0;
@@ -282,6 +293,9 @@ internal sealed class ConfigSwapService
     public void StartupRecover()
     {
         if (!IsSwapActive) return;
+        // Watchdog живёт максимум 24ч — если он истёк за время долгого сида,
+        // перезапускаем его при каждом старте приложения с активной подменой.
+        EnsureWatchdog();
         if (GameIsRunning())
         {
             LogService.Info("ConfigSwap: подмена активна, игра запущена — восстановлю после её выхода.");
@@ -377,6 +391,7 @@ internal sealed class ConfigSwapService
     {
         try { return string.Equals(Sha256Hex(path), expectedHash, StringComparison.OrdinalIgnoreCase); }
         catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     private static string Sha256Hex(string path)

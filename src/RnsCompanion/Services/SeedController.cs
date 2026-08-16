@@ -519,12 +519,14 @@ internal sealed class SeedController
         // Побочные эффекты (закрыть игру, сон) — только если реально сидели
         // в этом запуске. Иначе открытие приложения при протухшем enabled=true
         // гасило бы игру и уводило ПК в сон на ровном месте.
-        if (_wasOnTarget)
+        if (_wasOnTarget && s.CloseGameAfterSeed)
         {
-            // Сначала закрываем игру — exit-watcher восстановит конфиг ПОСЛЕ
-            // полного выхода процесса (игра допишет свой INI, потом watcher вернёт оригинал).
-            if (s.CloseGameAfterSeed)
-                await GameProcessService.CloseGameAsync();
+            // Сначала закрываем игру (CloseGameAsync ждёт полного выхода процесса,
+            // т.е. игра уже дописала свой INI), затем сразу восстанавливаем конфиг
+            // сами — не полагаясь только на тайминги exit-watcher'а. Если игра
+            // почему-то ещё жива, RestoreIfNeeded отложится на watcher.
+            await GameProcessService.CloseGameAsync();
+            ConfigSwapService.Instance.RestoreIfNeeded("завершение набора");
         }
 
         State.Phase = SeedPhase.Completed;

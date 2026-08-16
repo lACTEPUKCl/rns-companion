@@ -48,9 +48,12 @@ internal static class LogService
 
         _writer?.Dispose();
         Directory.CreateDirectory(LogDir);
+        // FileShare.ReadWrite: второй экземпляр (проброс /scheduled, rnscompanion://)
+        // тоже должен писать в лог — иначе он «немой», пока жив первый, и запуск
+        // из планировщика в 06:00 не оставляет никаких следов для диагностики.
         _writer = new StreamWriter(
             new FileStream(Path.Combine(LogDir, $"companion-{today}.log"),
-                FileMode.Append, FileAccess.Write, FileShare.Read))
+                FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
         { AutoFlush = true };
         _currentDate = today;
     }

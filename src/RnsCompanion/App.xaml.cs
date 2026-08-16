@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using RnsCompanion.Services;
 using Application = System.Windows.Application;
@@ -41,6 +42,14 @@ public partial class App : Application
             if (ConfigSwapService.Instance.IsSwapActive)
             {
                 LogService.Info("RestoreGuard: обнаружена активная подмена при входе в систему.");
+                // Если игра вдруг ещё идёт (автозапуск и т.п.) — ждём её выхода,
+                // как watchdog: восстанавливать строго после того, как игра
+                // допишет свой INI. Раньше тут был мгновенный выход, и
+                // восстановление терялось до ручного запуска приложения.
+                var deadline = DateTime.UtcNow.AddHours(12);
+                while (ConfigSwapService.Instance.GameIsRunning() && DateTime.UtcNow < deadline)
+                    Thread.Sleep(TimeSpan.FromSeconds(5));
+                Thread.Sleep(TimeSpan.FromSeconds(4)); // игра дописывает INI при выходе
                 ConfigSwapService.Instance.RestoreIfNeeded("вход в систему (RestoreGuard)");
             }
             LogService.Flush();
@@ -49,6 +58,20 @@ public partial class App : Application
         }
 
         LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (аргументы: {string.Join(" ", e.Args)})" : ""));
+
+        // Незавершённое обновление: скрипт самозамены не смог подменить exe —
+        // чаще всего потому, что приложение запустили вручную, не дождавшись
+        // окончания установки (работающий exe нельзя заменить).
+        var updateDir = Path.Combine(LogService.DataDir, "update");
+        var failedMarker = Path.Combine(updateDir, "update-failed.txt");
+        if (File.Exists(failedMarker) ||
+            File.Exists(Path.Combine(updateDir, UpdateService.ExeName + ".new")))
+        {
+            LogService.Warn("Прошлое обновление не применилось (возможно, приложение " +
+                            "запустили вручную до окончания установки) — повторите обновление.");
+            try { File.Delete(failedMarker); } catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
 
         ScheduledLaunch = e.Args.Any(a =>
             string.Equals(a, ScheduledCommand, StringComparison.OrdinalIgnoreCase));
