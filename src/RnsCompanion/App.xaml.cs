@@ -24,6 +24,18 @@ public partial class App : Application
 
         // ── Headless-режимы (без окна, без single-instance) ──
 
+        // Self-update: свежескачанный exe (.new) дожидается выхода старого
+        // процесса, подменяет целевой exe и запускает его.
+        if (e.Args is [var updCmd, var updPidArg, var updTarget, ..] &&
+            updCmd.Equals("/apply-update", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(updPidArg, out var oldPid))
+        {
+            UpdateService.ApplyUpdateMode(oldPid, updTarget);
+            LogService.Flush();
+            Shutdown();
+            return;
+        }
+
         // Watchdog: следит за родителем и восстанавливает конфиг, если тот убит.
         if (e.Args is [var cmd, var pidArg, ..] &&
             cmd.Equals("/watchdog", StringComparison.OrdinalIgnoreCase) &&
@@ -59,18 +71,29 @@ public partial class App : Application
 
         LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (аргументы: {string.Join(" ", e.Args)})" : ""));
 
-        // Незавершённое обновление: скрипт самозамены не смог подменить exe —
-        // чаще всего потому, что приложение запустили вручную, не дождавшись
-        // окончания установки (работающий exe нельзя заменить).
+        // Остатки самообновления: update-ok.txt — применилось, чистим недожатый
+        // .new; update-failed.txt или .new без ok — установка не завершилась
+        // (например, приложение запустили вручную до её окончания), предупреждаем.
         var updateDir = Path.Combine(LogService.DataDir, "update");
+        var okMarker = Path.Combine(updateDir, "update-ok.txt");
         var failedMarker = Path.Combine(updateDir, "update-failed.txt");
-        if (File.Exists(failedMarker) ||
-            File.Exists(Path.Combine(updateDir, UpdateService.ExeName + ".new")))
+        var newExeLeftover = Path.Combine(updateDir, UpdateService.ExeName + ".new");
+        if (File.Exists(okMarker))
+        {
+            foreach (var p in new[] { okMarker, failedMarker, newExeLeftover,
+                         Path.Combine(updateDir, "apply-update.cmd") })
+                try { File.Delete(p); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+        }
+        else if (File.Exists(failedMarker) || File.Exists(newExeLeftover))
         {
             LogService.Warn("Прошлое обновление не применилось (возможно, приложение " +
                             "запустили вручную до окончания установки) — повторите обновление.");
-            try { File.Delete(failedMarker); } catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            foreach (var p in new[] { failedMarker, newExeLeftover })
+                try { File.Delete(p); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
         }
 
         ScheduledLaunch = e.Args.Any(a =>

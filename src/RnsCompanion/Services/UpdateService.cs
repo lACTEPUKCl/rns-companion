@@ -111,42 +111,120 @@ internal static class UpdateService
             LogService.Info("Update: sha256 сошёлся");
         }
 
-        // Скрипт ждёт завершения нашего PID, подменяет exe и перезапускает его.
-        // Задержки через ping (timeout ломается без консоли), move — с ретраями:
-        // свежескачанный exe могут недолго держать Defender/индексатор.
-        // taskkill перед подменой: если пользователь не дождался и запустил
-        // приложение вручную, работающий старый exe блокирует move — прибиваем его.
-        var pid = Environment.ProcessId;
-        var script = Path.Combine(dir, "apply-update.cmd");
-        await File.WriteAllTextAsync(script,
-            "@echo off\r\n" +
-            ":wait\r\n" +
-            $"tasklist /FI \"PID eq {pid}\" | find \"{pid}\" >nul\r\n" +
-            "if %errorlevel%==0 ( ping -n 2 127.0.0.1 >nul & goto wait )\r\n" +
-            $"taskkill /F /IM \"{ExeName}\" >nul 2>&1\r\n" +
-            "set /a tries=0\r\n" +
-            ":move\r\n" +
-            $"move /y \"{newExe}\" \"{currentExe}\" >nul 2>&1\r\n" +
-            "if not errorlevel 1 goto start\r\n" +
-            "set /a tries+=1\r\n" +
-            "if %tries% geq 40 goto fail\r\n" +
-            "ping -n 3 127.0.0.1 >nul\r\n" +
-            "goto move\r\n" +
-            ":start\r\n" +
-            $"start \"\" \"{currentExe}\"\r\n" +
-            "goto cleanup\r\n" +
-            ":fail\r\n" +
-            $"echo update failed > \"{Path.Combine(dir, "update-failed.txt")}\"\r\n" +
-            ":cleanup\r\n" +
-            "del \"%~f0\"\r\n", ct);
-        LogService.Info($"Update: скрипт записан ({script}), запускаю cmd для pid {pid}");
-
-        var ps = Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"")
+        // Самообновление БЕЗ cmd-скрипта: свежескачанный exe (.new) запускается
+        // в headless-режиме /apply-update, дожидается выхода этого процесса,
+        // подменяет exe и запускает новую версию. cmd-путь был ненадёжен:
+        // batch читался cmd.exe в OEM-кодировке, а писался в UTF-8 — кириллица
+        // в путях (C:\Users\Кот\…) ломала move; скрытый cmd не переживал сон ПК.
+        LogService.Info($"Update: запускаю self-update — новый exe дождётся выхода pid {Environment.ProcessId} и подменит {currentExe}");
+        Process.Start(new ProcessStartInfo(newExe,
+            $"/apply-update {Environment.ProcessId} \"{currentExe}\"")
         {
-            CreateNoWindow = true,
             UseShellExecute = false,
-            WindowStyle = ProcessWindowStyle.Hidden,
+            CreateNoWindow = true,
         });
-        LogService.Info($"Update: cmd pid={ps?.Id.ToString() ?? "null"}");
+    }
+
+    /// <summary>Headless-режим самообновления (аргументы: /apply-update &lt;oldPid&gt; &lt;targetExe&gt;).
+    /// Этот процесс — свежескачанный exe (.new): ждём выхода старого приложения,
+    /// подменяем целевой exe на себя (с ретраями) и запускаем его.</summary>
+    public static void ApplyUpdateMode(int oldPid, string targetPath)
+    {
+        var self = Environment.ProcessPath;
+        var updateDir = Path.Combine(LogService.DataDir, "update");
+        var okMarker = Path.Combine(updateDir, "update-ok.txt");
+        var failMarker = Path.Combine(updateDir, "update-failed.txt");
+        LogService.Info($"Updater: самообновление — жду выхода pid {oldPid}, цель {targetPath}");
+
+        TryDelete(okMarker);
+        TryDelete(failMarker);
+        TryDelete(Path.Combine(updateDir, "apply-update.cmd")); // от старых версий
+
+        if (self is null || !File.Exists(targetPath))
+        {
+            LogService.Error($"Updater: self={self ?? "null"}, цель существует={File.Exists(targetPath)} — отмена.");
+            return;
+        }
+
+        // 1. Ждём выхода старого процесса (он закрывается сам через ~3 с).
+        var waitDeadline = DateTime.UtcNow.AddMinutes(5);
+        while (ConfigSwapService.ProcessAlive(oldPid) && DateTime.UtcNow < waitDeadline)
+            Thread.Sleep(1000);
+        if (ConfigSwapService.ProcessAlive(oldPid))
+            LogService.Warn($"Updater: старый процесс {oldPid} не завершился за 5 мин — подменяю поверх.");
+
+        // 2. Подмена с ретраями (до 10 мин): exe могут держать Defender/индексатор,
+        //    либо пользователь уже запустил старую версию вручную — тогда после
+        //    минуты неудач прибиваем экземпляр, держащий целевой файл.
+        var moveDeadline = DateTime.UtcNow.AddMinutes(10);
+        var killAttempted = false;
+        while (true)
+        {
+            try
+            {
+                var tmp = targetPath + ".tmp";
+                File.Copy(self, tmp, overwrite: true);
+                File.Move(tmp, targetPath, overwrite: true);
+                break;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (DateTime.UtcNow >= moveDeadline)
+                {
+                    LogService.Error($"Updater: не удалось подменить exe за 10 мин: {ex.Message}");
+                    TryWrite(failMarker, ex.Message);
+                    return;
+                }
+                if (!killAttempted && DateTime.UtcNow >= moveDeadline.AddMinutes(-9))
+                {
+                    killAttempted = true;
+                    KillInstanceHolding(targetPath);
+                }
+                Thread.Sleep(3000);
+            }
+        }
+
+        LogService.Info("Updater: exe подменён, запускаю новую версию.");
+        TryWrite(okMarker, DateTime.Now.ToString("O"));
+        try
+        {
+            Process.Start(new ProcessStartInfo(targetPath) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            LogService.Error("Updater: подмена удалась, но запуск новой версии не удался", ex);
+        }
+    }
+
+    /// <summary>Прибить экземпляр, держащий целевой exe (точное совпадение пути):
+    /// пользователь запустил старую версию вручную до окончания установки.</summary>
+    private static void KillInstanceHolding(string targetPath)
+    {
+        foreach (var p in Process.GetProcessesByName("RNS.Companion"))
+        {
+            try
+            {
+                if (p.Id == Environment.ProcessId) continue;
+                if (!string.Equals(p.MainModule?.FileName, targetPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                LogService.Warn($"Updater: цель занята вручную запущенным экземпляром (pid {p.Id}) — завершаю его.");
+                p.Kill();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static void TryWrite(string path, string text)
+    {
+        try { File.WriteAllText(path, text); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }
