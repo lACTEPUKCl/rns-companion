@@ -306,6 +306,7 @@ internal sealed class SeedController
     public async Task StopAsync()
     {
         StopLoop();
+        var s = _settings();
 
         try { await _api.StopSeedAsync(CancellationToken.None); }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
@@ -313,8 +314,14 @@ internal sealed class SeedController
             LogService.Warn($"POST stop не прошёл ({ex.Message}) — локально режим уже выключен.");
         }
 
-        // Подмена конфига здесь НЕ откатывается: если игра ещё идёт, она перезапишет
-        // INI при выходе — восстановление сделает exit-watcher после исчезновения процесса.
+        // При ручном завершении с включённым low-graphics пользователь ожидает
+        // вернуться в игру со своими настройками. Сначала даём игре корректно
+        // завершиться и дописать INI, затем сразу восстанавливаем оригинал.
+        if (s.LowGraphicsDuringSeed)
+        {
+            await GameProcessService.CloseGameAsync();
+            ConfigSwapService.Instance.RestoreIfNeeded("ручное завершение набора");
+        }
 
         ResetSessionCarry();
         State.Phase = SeedPhase.Idle;
