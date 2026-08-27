@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\RnsCompanion\Models\ApiModels.cs" Link="ApiModels.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\SeedDecisions.cs" Link="SeedDecisions.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\SteamJoinUrl.cs" Link="SteamJoinUrl.cs" />
+  </ItemGroup>
+</Project>

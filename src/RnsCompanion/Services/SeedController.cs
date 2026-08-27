@@ -6,35 +6,6 @@ using RnsCompanion.Models;
 
 namespace RnsCompanion.Services;
 
-/// <summary>
-/// Чистая логика принятия решений циклом набора (без побочных эффектов) —
-/// удобно тестировать.
-/// </summary>
-internal static class SeedDecisions
-{
-    /// <summary>Минимальный интервал между повторными join-запусками на один и тот же сервер.</summary>
-    public static readonly TimeSpan JoinMinInterval = TimeSpan.FromMinutes(2);
-
-    /// <summary>
-    /// Нужно ли сейчас запускать steam://joinlobby: режим включён, мы ещё не на цели,
-    /// цель и ссылка есть, и для этого сервера join не запускался последние 2 минуты.
-    /// </summary>
-    public static bool ShouldLaunchJoin(
-        AutoseedMyResponse my, string? lastJoinKey, DateTime? lastJoinUtc, DateTime nowUtc)
-    {
-        if (!my.Enabled || my.OnTarget) return false;
-        if (my.Target?.Key is not { } key || string.IsNullOrWhiteSpace(my.JoinUrl)) return false;
-        if (lastJoinKey != key || lastJoinUtc is null) return true;
-        return nowUtc - lastJoinUtc.Value >= JoinMinInterval;
-    }
-
-    /// <summary>Набор завершён: сервер сообщил, что ВСЕ серверы заполнены порогом
-    /// (пауза без цели в полосе покоя — не завершение). Старый бэкенд без флага —
-    /// легаси-эвристика: цель была и пропала.</summary>
-    public static bool IsSeedCompleted(bool targetWasSeen, AutoseedMyResponse my) =>
-        my.Enabled && (my.AllSeeded ?? (targetWasSeen && my.Target is null));
-}
-
 internal enum SeedPhase
 {
     Idle,        // режим выключен
@@ -72,8 +43,11 @@ internal sealed class SeedController
 
     private readonly ApiClient _api;
     private readonly Func<AppSettings> _settings;
+    private readonly SemaphoreSlim _startGate = new(1, 1);
 
     private CancellationTokenSource? _loop;
+    private IDisposable? _systemAwake;
+    private int _monitorOffGeneration;
     private string? _lastJoinKey;
     private DateTime? _lastJoinUtc;
     private bool _targetWasSeen;
@@ -141,7 +115,7 @@ internal sealed class SeedController
     {
         try
         {
-            File.WriteAllBytes(CarryPath, JsonSerializer.SerializeToUtf8Bytes(new CarryState
+            AtomicFile.WriteAllBytes(CarryPath, JsonSerializer.SerializeToUtf8Bytes(new CarryState
             {
                 CarryMinutes = _carryMinutes,
                 LastSessionStartedAt = _lastSessionStartedAt ?? DateTime.MinValue,
@@ -173,44 +147,61 @@ internal sealed class SeedController
     /// Если окно набора ещё закрыто — ждём его открытия и стартуем сами.</summary>
     public async Task StartAsync(bool scheduled, CancellationToken ct)
     {
-        if (IsRunning) return;
-
-        _loop = new CancellationTokenSource();
-        _scheduledMode = scheduled;
-        _targetWasSeen = false;
-        _wasOnTarget = false;
-        _lastJoinKey = null;
-        _lastJoinUtc = null;
-        _history.Clear();
-        ResetSessionCarry();
-
+        await _startGate.WaitAsync(ct);
         try
         {
-            await _api.StartSeedAsync(_loop.Token); // ApiException — наружу, в UI
-        }
-        catch (SeedWindowClosedException ex)
-        {
+            if (IsRunning)
+            {
+                // /scheduled мог прийти в уже работающий экземпляр, который успел
+                // подхватить enabled=true через ResumeAsync.
+                if (scheduled)
+                    _systemAwake ??= PowerService.KeepSystemAwake("набор по расписанию");
+                return;
+            }
+
+            var loop = new CancellationTokenSource();
+            _loop = loop;
+            _scheduledMode = scheduled;
+            if (scheduled)
+                _systemAwake ??= PowerService.KeepSystemAwake("набор по расписанию");
+            _targetWasSeen = false;
+            _wasOnTarget = false;
+            _lastJoinKey = null;
+            _lastJoinUtc = null;
+            _history.Clear();
+            ResetSessionCarry();
+
+            try
+            {
+                await _api.StartSeedAsync(loop.Token); // ApiException — наружу, в UI
+            }
+            catch (SeedWindowClosedException ex)
+            {
+                State.Phase = SeedPhase.Connecting;
+                State.StatusText = $"Набор начнётся {DescribeOpening(ex.OpensAt)} — жду открытия…";
+                StateChanged?.Invoke();
+                LogService.Info($"Окно набора закрыто — жду открытия ({DescribeOpening(ex.OpensAt)}).");
+                _ = Task.Run(() => WaitForWindowAsync(loop.Token));
+                return;
+            }
+            catch
+            {
+                StopLoop();
+                throw;
+            }
+
+            _noJoinUntilUtc = InitialNoJoinUntilUtc();
+
             State.Phase = SeedPhase.Connecting;
-            State.StatusText = $"Набор начнётся {DescribeOpening(ex.OpensAt)} — жду открытия…";
+            State.StatusText = "Набор включён. Опрашиваю сервер…";
             StateChanged?.Invoke();
-            LogService.Info($"Окно набора закрыто — жду открытия ({DescribeOpening(ex.OpensAt)}).");
-            _ = Task.Run(() => WaitForWindowAsync(_loop.Token));
-            return;
+
+            _ = Task.Run(() => RunLoopAsync(loop.Token));
         }
-        catch
+        finally
         {
-            StopLoop();
-            throw;
+            _startGate.Release();
         }
-
-        ApplyStartSideEffects();
-        _noJoinUntilUtc = InitialNoJoinUntilUtc();
-
-        State.Phase = SeedPhase.Connecting;
-        State.StatusText = "Набор включён. Опрашиваю сервер…";
-        StateChanged?.Invoke();
-
-        _ = Task.Run(() => RunLoopAsync(_loop.Token));
     }
 
     /// <summary>Ожидание открытия окна набора (запуск по расписанию до 06:00 и т.п.):
@@ -229,7 +220,6 @@ internal sealed class SeedController
                     catch (SeedWindowClosedException) { goto wait; } // окно ещё не открылось
 
                     LogService.Info("Окно набора открылось — режим включён.");
-                    ApplyStartSideEffects();
                     State.Phase = SeedPhase.Connecting;
                     State.StatusText = "Набор включён. Опрашиваю сервер…";
                     StateChanged?.Invoke();
@@ -281,53 +271,76 @@ internal sealed class SeedController
     /// </summary>
     public async Task ResumeAsync(CancellationToken ct)
     {
-        if (IsRunning) return;
-
-        AutoseedMyResponse? my;
-        try { my = await _api.GetMyAsync(ct); }
-        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        await _startGate.WaitAsync(ct);
+        try
         {
-            return; // сеть/сервер недоступны — остаёмся в выключенном состоянии
-        }
-        if (my?.Enabled != true) return;
+            if (IsRunning) return;
 
-        _loop = new CancellationTokenSource();
-        _scheduledMode = false;
-        _targetWasSeen = my.Target is not null;
-        _wasOnTarget = my.OnTarget; // подхват посреди сида — мы УЖЕ на цели
-        _noJoinUntilUtc = InitialNoJoinUntilUtc();
-        LoadCarry(); // сид продолжается — подтягиваем накопленные минуты прошлых сессий
-        LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
-        UpdateState(my);
-        _ = Task.Run(() => RunLoopAsync(_loop.Token));
+            AutoseedMyResponse? my;
+            try { my = await _api.GetMyAsync(ct); }
+            catch (ApiException ex) when (ex.IsAuthError)
+            {
+                LogService.Warn("Сохранённая сессия больше не принимается сервером.");
+                AuthExpired?.Invoke();
+                return;
+            }
+            catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+            {
+                return; // сеть/сервер недоступны — остаёмся в выключенном состоянии
+            }
+            if (my?.Enabled != true) return;
+
+            var loop = new CancellationTokenSource();
+            _loop = loop;
+            _scheduledMode = false;
+            _targetWasSeen = my.Target is not null;
+            _wasOnTarget = my.OnTarget; // подхват посреди сида — мы УЖЕ на цели
+            _noJoinUntilUtc = InitialNoJoinUntilUtc();
+            LoadCarry(); // сид продолжается — подтягиваем накопленные минуты прошлых сессий
+            LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
+            UpdateState(my);
+            _ = Task.Run(() => RunLoopAsync(loop.Token));
+        }
+        finally
+        {
+            _startGate.Release();
+        }
     }
 
     /// <summary>Выключить режим (POST /api/seed/stop) и остановить цикл.</summary>
     public async Task StopAsync()
     {
-        StopLoop();
-        var s = _settings();
-
-        try { await _api.StopSeedAsync(CancellationToken.None); }
-        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+        await _startGate.WaitAsync();
+        try
         {
-            LogService.Warn($"POST stop не прошёл ({ex.Message}) — локально режим уже выключен.");
-        }
+            StopLoop();
+            var s = _settings();
 
-        // При ручном завершении с включённым low-graphics пользователь ожидает
-        // вернуться в игру со своими настройками. Сначала даём игре корректно
-        // завершиться и дописать INI, затем сразу восстанавливаем оригинал.
-        if (s.LowGraphicsDuringSeed)
+            try { await _api.StopSeedAsync(CancellationToken.None); }
+            catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+            {
+                LogService.Warn($"POST stop не прошёл ({ex.Message}) — локально режим уже выключен.");
+            }
+
+            // При ручном завершении с включённым low-graphics пользователь ожидает
+            // вернуться в игру со своими настройками. Сначала даём игре корректно
+            // завершиться и дописать INI, затем сразу восстанавливаем оригинал.
+            if (s.LowGraphicsDuringSeed)
+            {
+                await GameProcessService.CloseGameAsync();
+                ConfigSwapService.Instance.RestoreIfNeeded("ручное завершение набора");
+            }
+
+            ResetSessionCarry();
+            State.Phase = SeedPhase.Idle;
+            State.Session = null;
+            State.StatusText = "Набор выключен";
+            StateChanged?.Invoke();
+        }
+        finally
         {
-            await GameProcessService.CloseGameAsync();
-            ConfigSwapService.Instance.RestoreIfNeeded("ручное завершение набора");
+            _startGate.Release();
         }
-
-        ResetSessionCarry();
-        State.Phase = SeedPhase.Idle;
-        State.Session = null;
-        State.StatusText = "Набор выключен";
-        StateChanged?.Invoke();
     }
 
     /// <summary>Локальная остановка без запросов к серверу (выход из приложения).</summary>
@@ -348,20 +361,14 @@ internal sealed class SeedController
             loop.Cancel();
             loop.Dispose();
         }
+        Interlocked.Increment(ref _monitorOffGeneration);
+        ReleaseSystemAwake();
     }
 
-    private void ApplyStartSideEffects()
+    private void ReleaseSystemAwake()
     {
-        var s = _settings();
-
-        // Low-graphics НЕ применяется на старте набора — только непосредственно
-        // перед запуском игры (см. TryApplyLowPreset перед join).
-
-        if ((s.MonitorOffDuringSeed && !_scheduledMode) ||
-            (s.MonitorOffInScheduledMode && _scheduledMode))
-        {
-            PowerService.MonitorsOff();
-        }
+        var lease = Interlocked.Exchange(ref _systemAwake, null);
+        lease?.Dispose();
     }
 
     /// <summary>
@@ -411,6 +418,7 @@ internal sealed class SeedController
                     {
                         TryApplyLowPreset();
                         LaunchJoin(my.JoinUrl!, my.Target!.Key!);
+                        ScheduleMonitorsOffAfterGameStarts(ct);
                         _lastJoinKey = my.Target.Key;
                         _lastJoinUtc = DateTime.UtcNow;
                     }
@@ -441,6 +449,32 @@ internal sealed class SeedController
             try { await Task.Delay(PollInterval, ct); }
             catch (OperationCanceledException) { return; }
         }
+    }
+
+    private void ScheduleMonitorsOffAfterGameStarts(CancellationToken ct)
+    {
+        var s = _settings();
+        if (!((s.MonitorOffDuringSeed && !_scheduledMode) ||
+              (s.MonitorOffInScheduledMode && _scheduledMode))) return;
+
+        var generation = Interlocked.Increment(ref _monitorOffGeneration);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var deadline = DateTime.UtcNow.AddMinutes(10);
+                while (!GameProcessService.IsGameRunning() && DateTime.UtcNow < deadline)
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                if (!GameProcessService.IsGameRunning() ||
+                    generation != Volatile.Read(ref _monitorOffGeneration)) return;
+
+                // Даём окну игры и Steam закончить переключение видеорежима.
+                await Task.Delay(TimeSpan.FromSeconds(20), ct);
+                if (generation == Volatile.Read(ref _monitorOffGeneration))
+                    PowerService.MonitorsOff();
+            }
+            catch (OperationCanceledException) { }
+        }, ct);
     }
 
     private void UpdateState(AutoseedMyResponse my)
@@ -496,6 +530,11 @@ internal sealed class SeedController
 
     private void LaunchJoin(string joinUrl, string targetKey)
     {
+        if (!GameProcessService.IsSafeJoinUrl(joinUrl))
+        {
+            LogService.Warn($"Ссылка подключения к {targetKey} отклонена: ожидалась steam://joinlobby/{GameProcessService.SquadAppId}/…");
+            return;
+        }
         try
         {
             Process.Start(new ProcessStartInfo(joinUrl) { UseShellExecute = true });
@@ -508,6 +547,13 @@ internal sealed class SeedController
     }
 
     private async Task CompleteSeedAsync()
+    {
+        await _startGate.WaitAsync();
+        try { await CompleteSeedCoreAsync(); }
+        finally { _startGate.Release(); }
+    }
+
+    private async Task CompleteSeedCoreAsync()
     {
         LogService.Info("Цель пропала — все серверы заполнены. Завершаю набор.");
         var s = _settings();

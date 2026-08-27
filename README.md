@@ -32,6 +32,8 @@ RNS Companion делает рутину за вас:
   счётчик бонусов, спарклайн онлайна цели, журнал событий.
 - **Расписание** — задача Windows Task Scheduler с опцией «будить компьютер»
   (WakeToRun): ПК проснётся ночью, поучаствует в наборе и снова уснёт.
+  На время автоматического набора приложение удерживает систему от повторного
+  сна; разблокировать Windows для работы сида не требуется.
 - **Энергосбережение** (всё опционально): гашение мониторов, low-graphics
   пресет `GameUserSettings.ini` на время игровой сессии (с многослойной
   защитой вашего конфига — см. ниже), сон ПК после завершения.
@@ -150,6 +152,7 @@ dotnet publish src/RnsCompanion/RnsCompanion.csproj -c Release -r win-x64 --self
   auth-URI первому через named pipe.
 - `Services/SeedController.cs` — цикл набора: опрос `/api/seed/my` каждые
   30 с, дедупликация join (не чаще раза в 2 минуты на сервер), завершение.
+- `Services/AtomicFile.cs` — атомарная запись настроек, токена и состояния сида.
 - `Services/SchedulerService.cs` — задача планировщика: `schtasks.exe`
   (daily/weekly, per-user, без админки) + PowerShell `Set-ScheduledTask`
   для WakeToRun и остальных настроек (как в проверенном bat-подходе).
@@ -164,3 +167,9 @@ dotnet publish src/RnsCompanion/RnsCompanion.csproj -c Release -r win-x64 --self
   закрытие игры (CloseMainWindow → kill по таймауту).
 
 Логи: `%LocalAppData%\RNS\Companion\logs`.
+
+Быстрые тесты чистой логики:
+
+```powershell
+dotnet run --project tools/logic-test/logic-test.csproj -c Release
+```

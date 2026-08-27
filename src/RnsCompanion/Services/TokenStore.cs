@@ -14,12 +14,25 @@ internal sealed class TokenStore
 {
     private readonly string _path = Path.Combine(LogService.DataDir, "session.dat");
 
-    public void Save(AuthState state)
+    public bool Save(AuthState state)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var clear = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(state));
-        File.WriteAllBytes(_path,
-            ProtectedData.Protect(clear, null, DataProtectionScope.CurrentUser));
+        byte[]? clear = null;
+        try
+        {
+            clear = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(state));
+            AtomicFile.WriteAllBytes(_path,
+                ProtectedData.Protect(clear, null, DataProtectionScope.CurrentUser));
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException)
+        {
+            LogService.Warn($"Не удалось сохранить авторизацию: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            if (clear is not null) CryptographicOperations.ZeroMemory(clear);
+        }
     }
 
     public AuthState? Load()
@@ -34,6 +47,7 @@ internal sealed class TokenStore
         catch (CryptographicException) { return null; }
         catch (JsonException) { return null; }
         catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     public void Clear()

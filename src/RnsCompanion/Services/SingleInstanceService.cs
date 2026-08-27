@@ -13,9 +13,29 @@ internal sealed class SingleInstanceService : IDisposable
     private readonly string _pipeName;
     private readonly Mutex _mutex;
     private readonly CancellationTokenSource _stop = new();
+    private readonly object _handlerSync = new();
+    private readonly Queue<string> _pendingMessages = new();
+    private Action<string>? _messageReceived;
 
     public bool IsPrimary { get; }
-    public event Action<string>? MessageReceived;
+    public event Action<string> MessageReceived
+    {
+        add
+        {
+            List<string> pending;
+            lock (_handlerSync)
+            {
+                _messageReceived += value;
+                pending = _pendingMessages.ToList();
+                _pendingMessages.Clear();
+            }
+            foreach (var message in pending) value(message);
+        }
+        remove
+        {
+            lock (_handlerSync) _messageReceived -= value;
+        }
+    }
 
     public SingleInstanceService(string name)
     {
@@ -35,10 +55,17 @@ internal sealed class SingleInstanceService : IDisposable
         {
             try
             {
-                using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out);
+                using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut);
                 client.Connect(3000);
-                using var writer = new StreamWriter(client, Encoding.UTF8) { AutoFlush = true };
+                using var writer = new StreamWriter(client, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
                 writer.WriteLine(message);
+                // Не завершаем экземпляр из планировщика, пока основной экземпляр
+                // реально не обработал команду. Иначе после wake-таймера Windows
+                // может снова уснуть, оставив /scheduled в очереди UI до утра.
+                using var reader = new StreamReader(client, Encoding.UTF8, leaveOpen: true);
+                client.ReadTimeout = 30000;
+                if (!string.Equals(reader.ReadLine(), "OK", StringComparison.Ordinal))
+                    throw new IOException("Основной экземпляр не подтвердил команду.");
                 return;
             }
             catch (Exception ex) when (ex is TimeoutException or IOException)
@@ -56,12 +83,23 @@ internal sealed class SingleInstanceService : IDisposable
             try
             {
                 await using var server = new NamedPipeServerStream(
-                    _pipeName, PipeDirection.In, 1,
+                    _pipeName, PipeDirection.InOut, 1,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await server.WaitForConnectionAsync(_stop.Token);
                 using var reader = new StreamReader(server, Encoding.UTF8);
                 if (await reader.ReadLineAsync(_stop.Token) is { } message)
-                    MessageReceived?.Invoke(message);
+                {
+                    Action<string>? handler;
+                    lock (_handlerSync)
+                    {
+                        handler = _messageReceived;
+                        if (handler is null) _pendingMessages.Enqueue(message);
+                    }
+                    handler?.Invoke(message);
+                    await using var writer = new StreamWriter(server, Encoding.UTF8, leaveOpen: true)
+                        { AutoFlush = true };
+                    await writer.WriteLineAsync("OK");
+                }
             }
             catch (OperationCanceledException) { }
             catch (ObjectDisposedException) when (_stop.IsCancellationRequested) { }

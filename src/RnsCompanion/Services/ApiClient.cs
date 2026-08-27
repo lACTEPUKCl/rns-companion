@@ -31,10 +31,16 @@ internal sealed class ApiClient : IDisposable
         get => _baseUrl;
         set
         {
-            var url = string.IsNullOrWhiteSpace(value) ? DefaultBaseUrl : value.Trim().TrimEnd('/');
-            if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
-                !url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-                url = "https://" + url;
+            var candidate = string.IsNullOrWhiteSpace(value) ? DefaultBaseUrl : value.Trim().TrimEnd('/');
+            if (!candidate.Contains("://", StringComparison.Ordinal))
+                candidate = "https://" + candidate;
+            var valid = Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
+                        string.IsNullOrEmpty(uri.UserInfo) &&
+                        (uri.Scheme == Uri.UriSchemeHttps ||
+                         (uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback));
+            var url = valid ? candidate : DefaultBaseUrl;
+            if (!valid)
+                LogService.Warn("Небезопасный BaseUrl отклонён: разрешены HTTPS и HTTP только для localhost.");
             if (_baseUrl != url)
             {
                 _baseUrl = url;
@@ -50,7 +56,11 @@ internal sealed class ApiClient : IDisposable
             CookieContainer = _cookies,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) };
+        _http = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(25),
+            MaxResponseContentBufferSize = 5 * 1024 * 1024,
+        };
         _http.DefaultRequestHeaders.UserAgent.Add(
             new ProductInfoHeaderValue("RNS-Companion",
                 typeof(ApiClient).Assembly.GetName().Version?.ToString() ?? "1.0"));
@@ -74,7 +84,11 @@ internal sealed class ApiClient : IDisposable
         GetAsync<AutoseedMyResponse>("/api/seed/my", ct);
 
     public Task<AutoseedStatusResponse?> GetStatusAsync(CancellationToken ct) =>
-        GetAsync<AutoseedStatusResponse>("/api/seed/status", ct);
+        // The status changes frequently. A unique query parameter also protects us
+        // from intermediary/CDN caches that ignore client Cache-Control headers.
+        GetAsync<AutoseedStatusResponse>(
+            $"/api/seed/status?_={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", ct,
+            bypassCache: true);
 
     /// <summary>steam:// ссылка подключения к серверу по имени (публичный join-link).</summary>
     public async Task<string?> GetJoinUrlAsync(string serverName, CancellationToken ct)
@@ -84,6 +98,11 @@ internal sealed class ApiClient : IDisposable
             null, csrf: false, ct);
         if (!resp.IsSuccessStatusCode) return null;
         var data = await ReadJsonAsync<JoinLinkResponse>(resp, ct);
+        if (data?.JoinUrl is { } joinUrl && !GameProcessService.IsSafeJoinUrl(joinUrl))
+        {
+            LogService.Warn("API вернул недопустимую ссылку подключения — запуск заблокирован.");
+            return null;
+        }
         return data?.JoinUrl;
     }
 
@@ -111,9 +130,9 @@ internal sealed class ApiClient : IDisposable
     public Task BuyVipAsync(CancellationToken ct) =>
         PostWithCsrfAsync("/api/vip/buy", new { }, ct);
 
-    private async Task<T?> GetAsync<T>(string path, CancellationToken ct)
+    private async Task<T?> GetAsync<T>(string path, CancellationToken ct, bool bypassCache = false)
     {
-        using var resp = await SendAsync(HttpMethod.Get, path, null, csrf: false, ct);
+        using var resp = await SendAsync(HttpMethod.Get, path, null, csrf: false, ct, bypassCache);
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
             throw new ApiException(resp.StatusCode, "Сессия истекла — войдите заново.");
         if (!resp.IsSuccessStatusCode)
@@ -184,9 +203,20 @@ internal sealed class ApiClient : IDisposable
     }
 
     private Task<HttpResponseMessage> SendAsync(
-        HttpMethod method, string path, HttpContent? content, bool csrf, CancellationToken ct)
+        HttpMethod method, string path, HttpContent? content, bool csrf, CancellationToken ct,
+        bool bypassCache = false)
     {
         var req = new HttpRequestMessage(method, _baseUrl + path);
+        if (bypassCache)
+        {
+            req.Headers.CacheControl = new CacheControlHeaderValue
+            {
+                NoCache = true,
+                NoStore = true,
+                MaxAge = TimeSpan.Zero,
+            };
+            req.Headers.Pragma.ParseAdd("no-cache");
+        }
         if (Token is { } token)
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         if (csrf && _csrfToken is not null)

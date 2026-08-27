@@ -69,7 +69,7 @@ public partial class App : Application
             return;
         }
 
-        LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (аргументы: {string.Join(" ", e.Args)})" : ""));
+        LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (режим: {DescribeArguments(e.Args)})" : ""));
 
         // Остатки самообновления: update-ok.txt — применилось, чистим недожатый
         // .new; update-failed.txt или .new без ok — установка не завершилась
@@ -147,4 +147,11 @@ public partial class App : Application
         LogService.Flush();
         base.OnExit(e);
     }
+
+    private static string DescribeArguments(string[] args) =>
+        args.Any(a => a.StartsWith(ProtocolScheme + ":", StringComparison.OrdinalIgnoreCase))
+            ? "callback авторизации (код скрыт)"
+            : args.Any(a => a.Equals(ScheduledCommand, StringComparison.OrdinalIgnoreCase))
+                ? ScheduledCommand
+                : args.Length > 0 ? args[0] : "обычный запуск";
 }

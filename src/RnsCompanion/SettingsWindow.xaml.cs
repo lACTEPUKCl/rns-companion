@@ -138,6 +138,13 @@ public partial class SettingsWindow : Window
     {
         _onChange(BuildSettings());
         MarkSaved();
+        if (ChkLowGraphics.IsChecked == true)
+        {
+            // RestoreGuard должен появиться сразу после включения low-graphics,
+            // даже если пользователь не менял настройки расписания.
+            _scheduleTimer.Stop();
+            _scheduleTimer.Start();
+        }
     }
 
     private void OnScheduleChanged()
@@ -154,7 +161,7 @@ public partial class SettingsWindow : Window
 
     // ─────────────────── Планировщик (фон, с дебаунсом) ───────────────────
 
-    private void ApplyScheduleTask()
+    private async void ApplyScheduleTask()
     {
         if (_scheduleBusy)
         {
@@ -176,9 +183,10 @@ public partial class SettingsWindow : Window
 
         _scheduleBusy = true;
         TxtScheduleState.Text = "Применяю задачу планировщика…";
-        Task.Run(() =>
+        string? error = null;
+        try
         {
-            try
+            await Task.Run(() =>
             {
                 if (s.ScheduleEnabled)
                     SchedulerService.Register(days, s.ScheduleTimeOfDay, s.ScheduleWakeToRun);
@@ -189,43 +197,48 @@ public partial class SettingsWindow : Window
                 // включением low-graphics (и обновляем путь к exe при каждом применении).
                 if (s.LowGraphicsDuringSeed)
                     SchedulerService.RegisterRestoreGuard();
-
-                return null;
-            }
-            catch (InvalidOperationException ex) { return ex.Message; }
-        }).ContinueWith(t => Dispatcher.Invoke(() =>
+            });
+        }
+        catch (Exception ex)
         {
-            _scheduleBusy = false;
-            if (t.Result is { } error)
-            {
-                LogService.Error("Планировщик: не удалось применить задачу: " + error);
-                TxtScheduleState.Text = "Не удалось применить задачу: " + error;
-            }
-            LoadTaskSummaryAsync();
-            if (_schedulePending)
-            {
-                _schedulePending = false;
-                _scheduleTimer.Start();
-            }
-        }));
+            error = ex.GetBaseException().Message;
+        }
+
+        _scheduleBusy = false;
+        if (error is not null)
+        {
+            LogService.Error("Планировщик: не удалось применить задачу: " + error);
+            TxtScheduleState.Text = "Не удалось применить задачу: " + error;
+        }
+        LoadTaskSummaryAsync();
+        if (_schedulePending)
+        {
+            _schedulePending = false;
+            _scheduleTimer.Start();
+        }
     }
 
     /// <summary>
     /// Состояние задачи планировщика читается асинхронно (schtasks/PowerShell —
     /// сотни миллисекунд): в UI-потоке это фризило окно при каждом клике.
     /// </summary>
-    private void LoadTaskSummaryAsync()
+    private async void LoadTaskSummaryAsync()
     {
         if (!_scheduleBusy && TxtScheduleState.Text != "Применяю задачу планировщика…")
             TxtScheduleState.Text = "Проверяю задачу планировщика…";
-        Task.Run(() => SchedulerService.GetTaskSummary())
-            .ContinueWith(t => Dispatcher.Invoke(() =>
-            {
-                if (_busy || _scheduleBusy) return;
-                TxtScheduleState.Text = t.Result is { } summary
-                    ? $"В планировщике: {summary}"
-                    : "Задача в планировщике пока не создана.";
-            }), TaskContinuationOptions.OnlyOnRanToCompletion);
+        try
+        {
+            var summary = await Task.Run(SchedulerService.GetTaskSummary);
+            if (_busy || _scheduleBusy) return;
+            TxtScheduleState.Text = summary is not null
+                ? $"В планировщике: {summary}"
+                : "Задача в планировщике пока не создана.";
+        }
+        catch (Exception ex)
+        {
+            if (!_busy && !_scheduleBusy)
+                TxtScheduleState.Text = "Не удалось проверить планировщик: " + ex.GetBaseException().Message;
+        }
     }
 
     /// <summary>Строка-подтверждение + доступность контролов расписания (только локальные данные).</summary>
@@ -273,32 +286,34 @@ public partial class SettingsWindow : Window
     private List<DayOfWeek> SelectedDays() =>
         _dayBoxes.Where(d => d.Box.IsChecked == true).Select(d => d.Day).ToList();
 
-    private void DeleteSchedule()
+    private async void DeleteSchedule()
     {
         if (_busy) return;
         _busy = true;
         BtnDeleteSchedule.IsEnabled = false;
-        Task.Run(() =>
+        string? error = null;
+        try
         {
-            try
+            await Task.Run(() =>
             {
                 if (SchedulerService.TaskExists()) SchedulerService.Delete();
-                return null;
-            }
-            catch (InvalidOperationException ex) { return ex.Message; }
-        }).ContinueWith(t => Dispatcher.Invoke(() =>
+            });
+        }
+        catch (Exception ex)
         {
-            _busy = false;
-            BtnDeleteSchedule.IsEnabled = true;
-            if (t.Result is { } error)
-            {
-                LogService.Error("Планировщик: не удалось удалить задачу: " + error);
-                MessageBox.Show(this, "Не удалось удалить задачу планировщика:\n" + error,
-                    "RNS Companion", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-            ChkScheduleEnabled.IsChecked = false;
-            RefreshScheduleUi();
-            LoadTaskSummaryAsync();
-        }));
+            error = ex.GetBaseException().Message;
+        }
+
+        _busy = false;
+        BtnDeleteSchedule.IsEnabled = true;
+        if (error is not null)
+        {
+            LogService.Error("Планировщик: не удалось удалить задачу: " + error);
+            MessageBox.Show(this, "Не удалось удалить задачу планировщика:\n" + error,
+                "RNS Companion", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        ChkScheduleEnabled.IsChecked = false;
+        RefreshScheduleUi();
+        LoadTaskSummaryAsync();
     }
 }

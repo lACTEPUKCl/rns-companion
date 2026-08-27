@@ -70,23 +70,19 @@ $sw = [System.Windows.Automation.AutomationElement]::FromHandle($script:found)
 [W32G]::SetForegroundWindow($script:found) | Out-Null
 Start-Sleep -Milliseconds 500
 
-# CheckBox index 2 = LowGraphics (0=MonitorOff, 1=MonitorOffScheduled, 2=LowGraphics).
-$boxes = $sw.FindAll('Descendants', (New-Object System.Windows.Automation.PropertyCondition(
-  $ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::CheckBox)))
-Write-Host ("CheckBoxes found: " + $boxes.Count)
-$low = $boxes.Item(2)
+# Ищем по AutomationId: порядок чекбоксов меняется при развитии интерфейса.
+$low = $sw.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition(
+  $ae::AutomationIdProperty, "ChkLowGraphics")))
+if ($null -eq $low) { Write-Host "FAIL: low-graphics checkbox"; Stop-Process -Id $proc.Id -Force; exit 1 }
 $tp = $low.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
 if ($tp.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
   Click-Element $low
-  Start-Sleep -Seconds 1
+  Start-Sleep -Seconds 5
 }
-
-$save = $sw.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, "BtnSave")))
-$save.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-Start-Sleep -Seconds 4
+Start-Sleep -Seconds 2
 
 $proc.Refresh()
-if ($proc.HasExited) { Write-Host "FAIL: crashed on save"; exit 1 }
+if ($proc.HasExited) { Write-Host "FAIL: crashed on autosave"; exit 1 }
 
 $task = Get-ScheduledTask -TaskName "RNS Companion RestoreGuard" -ErrorAction SilentlyContinue
 if ($null -eq $task) {

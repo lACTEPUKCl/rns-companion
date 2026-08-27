@@ -19,7 +19,8 @@ namespace RnsCompanion;
 
 public partial class MainWindow : Window
 {
-    private static readonly TimeSpan PublicStatusInterval = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan PublicStatusInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PrivateStatusInterval = TimeSpan.FromMinutes(1);
     private const int MaxJournalLines = 300;
 
     private readonly ApiClient _api = new();
@@ -46,11 +47,11 @@ public partial class MainWindow : Window
         _settings = _settingsStore.Load();
         _api.BaseUrl = _settings.BaseUrl;
         _seed = new SeedController(_api, () => _settings);
-        _seed.StateChanged += () => Dispatcher.Invoke(RefreshSeedUi);
-        _seed.AuthExpired += () => Dispatcher.Invoke(() =>
+        _seed.StateChanged += () => InvokeUi(RefreshSeedUi);
+        _seed.AuthExpired += () => InvokeUi(() =>
         {
             AppendJournal("Сессия истекла — войдите заново.");
-            ShowLoggedOut();
+            ClearAuth();
         });
 
         Icon = LogoService.Logo;
@@ -90,7 +91,7 @@ public partial class MainWindow : Window
         };
 
         BtnLogin.Click += (_, _) => StartBrowserLogin();
-        BtnLogout.Click += (_, _) => Logout();
+        BtnLogout.Click += async (_, _) => await LogoutAsync();
         BtnStart.Click += async (_, _) => await StartSeedAsync(scheduled: false);
         BtnStop.Click += async (_, _) => await StopSeedAsync();
         BtnSettings.Click += (_, _) => OpenSettings();
@@ -126,6 +127,8 @@ public partial class MainWindow : Window
 
         _ = Task.Run(() => PublicStatusLoopAsync(_statusPoll.Token));
         _ = Task.Run(() => UpdateCheckLoopAsync(_statusPoll.Token));
+        if (!scheduledLaunch)
+            _ = RefreshScheduledTasksAfterUpdateAsync();
 
         if (scheduledLaunch)
             HandleScheduledCommand();
@@ -142,6 +145,37 @@ public partial class MainWindow : Window
             AppendJournal("Нет сохранённой авторизации — войдите вручную, затем расписание будет работать.");
         else
             _ = StartSeedAsync(scheduled: true);
+    }
+
+    /// <summary>После обновления переносит новые надёжные настройки в уже
+    /// существующие задачи — пользователю не нужно переключать расписание вручную.</summary>
+    private async Task RefreshScheduledTasksAfterUpdateAsync()
+    {
+        var settings = _settings;
+        if (!settings.ScheduleEnabled && !settings.LowGraphicsDuringSeed) return;
+        try
+        {
+            await Task.Run(() =>
+            {
+                if (settings.ScheduleEnabled)
+                {
+                    var days = settings.ScheduleEveryDay
+                        ? Enum.GetValues<DayOfWeek>().ToList()
+                        : settings.ScheduleDays
+                            .Where(d => Enum.IsDefined(typeof(DayOfWeek), d))
+                            .Select(d => (DayOfWeek)d).Distinct().ToList();
+                    if (days.Count > 0)
+                        SchedulerService.Register(days, settings.ScheduleTimeOfDay,
+                            settings.ScheduleWakeToRun);
+                }
+                if (settings.LowGraphicsDuringSeed)
+                    SchedulerService.RegisterRestoreGuard();
+            });
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn($"Не удалось обновить существующие задачи планировщика: {ex.GetBaseException().Message}");
+        }
     }
 
     // ─────────────────────────── Авторизация ───────────────────────────
@@ -184,7 +218,7 @@ public partial class MainWindow : Window
         var code = ExtractCode(uri);
         if (code is null)
         {
-            AppendJournal($"Получен неизвестный URI: {uri}");
+            AppendJournal("Получен некорректный callback авторизации (содержимое скрыто).");
             return;
         }
         _ = ExchangeCodeAsync(code);
@@ -196,9 +230,11 @@ public partial class MainWindow : Window
         {
             var token = await _api.ExchangeCodeAsync(code, CancellationToken.None);
             _api.Token = token;
-            _tokens.Save(new AuthState { Token = token });
+            var persisted = _tokens.Save(new AuthState { Token = token });
             ShowLoggedIn(token);
-            AppendJournal("Вход выполнен. Токен сохранён в защищённом хранилище.");
+            AppendJournal(persisted
+                ? "Вход выполнен. Токен сохранён в защищённом хранилище."
+                : "Вход выполнен, но токен не удалось сохранить — после перезапуска потребуется войти снова.");
             await _seed.ResumeAsync(CancellationToken.None); // вдруг набор уже активен на сервере
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
@@ -208,13 +244,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Logout()
+    private async Task LogoutAsync()
     {
-        _ = StopSeedAsync();
+        // Серверный stop должен уйти с ещё действующим Bearer-токеном.
+        await StopSeedAsync(forceServerStop: true);
+        ClearAuth();
+        AppendJournal("Вы вышли из аккаунта. Токен удалён.");
+    }
+
+    private void ClearAuth()
+    {
         _api.Token = null;
         _tokens.Clear();
         ShowLoggedOut();
-        AppendJournal("Вы вышли из аккаунта. Токен удалён.");
     }
 
     private void ShowLoggedIn(string token)
@@ -262,13 +304,23 @@ public partial class MainWindow : Window
 
     private static string? ExtractCode(string uri)
     {
-        // rnscompanion://auth#code=... (код во fragment, чтобы не светился в логах прокси)
-        var marker = "#code=";
-        var idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0) return Uri.UnescapeDataString(uri[(idx + marker.Length)..]);
-        marker = "code=";
-        idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        return idx >= 0 ? Uri.UnescapeDataString(uri[(idx + marker.Length)..].TrimEnd('/')) : null;
+        if (uri.Length > 8192 || !Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ||
+            !string.Equals(parsed.Scheme, App.ProtocolScheme, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(parsed.Host, "auth", StringComparison.OrdinalIgnoreCase)) return null;
+
+        // Код приходит во fragment, чтобы не попадать в журналы HTTP-прокси.
+        var values = parsed.Fragment.TrimStart('#').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Concat(parsed.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries));
+        foreach (var pair in values)
+        {
+            var parts = pair.Split('=', 2);
+            if (parts.Length == 2 && string.Equals(parts[0], "code", StringComparison.OrdinalIgnoreCase))
+            {
+                var code = Uri.UnescapeDataString(parts[1]);
+                return code is { Length: > 0 and <= 4096 } ? code : null;
+            }
+        }
+        return null;
     }
 
     // ─────────────────────────── Новости Squad ───────────────────────────
@@ -422,7 +474,7 @@ public partial class MainWindow : Window
         {
             LogService.Warn("Запуск набора: сессия истекла — требуется повторный вход.");
             AppendJournal("Сессия истекла — войдите заново.");
-            ShowLoggedOut();
+            ClearAuth();
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {
@@ -452,9 +504,9 @@ public partial class MainWindow : Window
         await StartSeedAsync(scheduled: true, retryAttempt: attempt);
     }
 
-    private async Task StopSeedAsync()
+    private async Task StopSeedAsync(bool forceServerStop = false)
     {
-        if (!_seed.IsRunning) return;
+        if (!_seed.IsRunning && !forceServerStop) return;
         BtnStop.IsEnabled = false;
         try
         {
@@ -651,6 +703,7 @@ public partial class MainWindow : Window
 
     private async Task PublicStatusLoopAsync(CancellationToken ct)
     {
+        var nextPrivatePollUtc = DateTime.MinValue;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -662,7 +715,7 @@ public partial class MainWindow : Window
                     if (status.Threshold > 0) _threshold = status.Threshold;
                     _lastStatus = status;
                     var text = BuildStatusText(status);
-                    Dispatcher.Invoke(() =>
+                    InvokeUi(() =>
                     {
                         TxtPublicStatus.Text = text;
                         UpdateServersCard();
@@ -677,30 +730,31 @@ public partial class MainWindow : Window
                     ? "Сервер обновлён: скачайте новую версию приложения"
                     : ex.IsAuthError ? "Ошибка авторизации"
                     : $"Сервер недоступен ({(int)ex.StatusCode})";
-                Dispatcher.Invoke(() => TxtPublicStatus.Text = text);
+                InvokeUi(() => TxtPublicStatus.Text = text);
             }
             catch (HttpRequestException ex)
             {
                 LogService.Warn($"Публичный статус: {ex.Message}");
-                Dispatcher.Invoke(() => TxtPublicStatus.Text = "Нет соединения с сервером");
+                InvokeUi(() => TxtPublicStatus.Text = "Нет соединения с сервером");
             }
             catch (OperationCanceledException) { return; }
 
             // Баланс бонусов и VIP — тем же поллом, только когда залогинены
-            if (_api.Token is not null)
+            if (_api.Token is not null && DateTime.UtcNow >= nextPrivatePollUtc)
             {
+                nextPrivatePollUtc = DateTime.UtcNow + PrivateStatusInterval;
                 try
                 {
                     var vip = await _api.GetVipMyAsync(ct);
                     if (vip?.Ok == true)
-                        Dispatcher.Invoke(() => UpdateVipUi(vip));
+                        InvokeUi(() => UpdateVipUi(vip));
                 }
                 catch (ApiException ex) when (ex.IsAuthError)
                 {
-                    Dispatcher.Invoke(() =>
+                    InvokeUi(() =>
                     {
                         AppendJournal("Сессия истекла — войдите заново.");
-                        ShowLoggedOut();
+                        ClearAuth();
                     });
                 }
                 catch (Exception ex) when (ex is ApiException or HttpRequestException)
@@ -730,7 +784,7 @@ public partial class MainWindow : Window
             if (info is not null)
             {
                 _pendingUpdate = info;
-                Dispatcher.Invoke(() =>
+                InvokeUi(() =>
                 {
                     if (_updateDismissed == info.Version || _updateInProgress) return;
                     TxtUpdate.Text = $"Доступна новая версия v{info.Version}";
@@ -825,7 +879,7 @@ public partial class MainWindow : Window
         catch (ApiException ex) when (ex.IsAuthError)
         {
             AppendJournal("Сессия истекла — войдите заново.");
-            ShowLoggedOut();
+            ClearAuth();
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {
@@ -906,6 +960,18 @@ public partial class MainWindow : Window
         }
     }
 
+    private void InvokeUi(Action action)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+        try
+        {
+            if (Dispatcher.CheckAccess()) action();
+            else Dispatcher.Invoke(action);
+        }
+        catch (TaskCanceledException) { }
+        catch (InvalidOperationException) when (Dispatcher.HasShutdownStarted) { }
+    }
+
     // ─────────────────────────── Трей ───────────────────────────
 
     private void InitTray()
@@ -917,10 +983,10 @@ public partial class MainWindow : Window
             Visible = true,
         };
         var menu = new WinForms.ContextMenuStrip();
-        menu.Items.Add("Открыть", null, (_, _) => Dispatcher.Invoke(ShowAndActivate));
-        menu.Items.Add("Выход", null, (_, _) => Dispatcher.Invoke(ExitForReal));
+        menu.Items.Add("Открыть", null, (_, _) => InvokeUi(ShowAndActivate));
+        menu.Items.Add("Выход", null, (_, _) => InvokeUi(ExitForReal));
         _tray.ContextMenuStrip = menu;
-        _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowAndActivate);
+        _tray.DoubleClick += (_, _) => InvokeUi(ShowAndActivate);
     }
 
     private void ShowAndActivate()

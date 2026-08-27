@@ -2,7 +2,7 @@
 // Реальный %LOCALAPPDATA%\SquadGame не трогаем: iniPathOverride ведёт в temp-папку,
 // проверка «игра запущена» — через инжектируемый probe (на машине может быть запущена
 // НАСТОЯЩАЯ игра — её нельзя трогать). Маркер/второй бэкап — в штатном
-// %LocalAppData%\RNS\Companion (нужно для e2e с режимами /watchdog и
+// изолированную temp-папку (включая e2e с режимами /watchdog и
 // /restore-if-swapped реального exe); дочерним процессам ставим
 // RNS_COMPANION_GAME_RUNNING=0, чтобы они не ждали выхода настоящей игры.
 //
@@ -22,6 +22,8 @@ var appExe = args.Length > 0 ? args[0] : null;
 
 var tempDir = Path.Combine(Path.GetTempPath(), "rns-swap-test-" + Guid.NewGuid().ToString("N")[..8]);
 Directory.CreateDirectory(tempDir);
+var testDataDir = Path.Combine(tempDir, "data");
+Environment.SetEnvironmentVariable("RNS_COMPANION_TEST_DATA_DIR", testDataDir);
 var fakeIni = Path.Combine(tempDir, "GameUserSettings.ini");
 var primaryBak = Path.Combine(tempDir, "GameUserSettings.rnsbak.ini");
 const string originalContent = "; оригинальный конфиг пользователя\nResolutionSizeX=2560\n";
@@ -34,9 +36,9 @@ bool FakeGameAlive()
     return fakeGames.Count > 0;
 }
 
-var svc = new ConfigSwapService(iniPathOverride: fakeIni, isGameRunning: FakeGameAlive);
-var markerPath = Path.Combine(LogService.DataDir, "swap-state.json");
-var secondBak = Path.Combine(LogService.DataDir, "backup", "GameUserSettings.ini");
+var svc = new ConfigSwapService(iniPathOverride: fakeIni, dataDir: testDataDir, isGameRunning: FakeGameAlive);
+var markerPath = Path.Combine(testDataDir, "swap-state.json");
+var secondBak = Path.Combine(testDataDir, "backup", "GameUserSettings.ini");
 
 var allFake = new List<Process>();
 Process StartFake(string exeName, string pingArgs)
@@ -67,6 +69,7 @@ Process StartApp(string arguments)
     };
     // Не ждём выхода настоящей игры (она может быть запущена на машине).
     psi.Environment["RNS_COMPANION_GAME_RUNNING"] = "0";
+    psi.Environment["RNS_COMPANION_TEST_DATA_DIR"] = testDataDir;
     return Process.Start(psi)!;
 }
 
@@ -84,7 +87,7 @@ bool WaitForRestored(int seconds)
 void CleanupSwap()
 {
     foreach (var p in new[] { markerPath, secondBak, primaryBak,
-             Path.Combine(LogService.DataDir, "backup", "backup.sha256") })
+             Path.Combine(testDataDir, "backup", "backup.sha256") })
         try { File.Delete(p); } catch { }
 }
 
@@ -97,7 +100,7 @@ try
         && svc.IsSwapActive);
     Check("S1 apply: оба бэкапа + хэш созданы",
         File.Exists(primaryBak) && File.Exists(secondBak)
-        && File.Exists(Path.Combine(LogService.DataDir, "backup", "backup.sha256")));
+        && File.Exists(Path.Combine(testDataDir, "backup", "backup.sha256")));
     svc.RestoreIfNeeded("S1");
     Check("S1 restore: оригинал возвращён, маркер снят",
         File.ReadAllText(fakeIni) == originalContent && !svc.IsSwapActive
@@ -171,9 +174,8 @@ finally
         p.Dispose();
     }
     CleanupSwap();
-    try { File.Delete(Path.Combine(LogService.DataDir, "watchdog.pid")); } catch { }
+    try { File.Delete(Path.Combine(testDataDir, "watchdog.pid")); } catch { }
     try { Directory.Delete(tempDir, recursive: true); } catch { }
-    SchedulerService.DeleteRestoreGuard(); // на случай, если тесты её создали
 }
 
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"FAILURES: {failures}");

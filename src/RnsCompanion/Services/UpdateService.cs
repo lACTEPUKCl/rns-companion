@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace RnsCompanion.Services;
 
@@ -100,6 +102,11 @@ internal static class UpdateService
         {
             var shaText = await HttpDownload.GetStringAsync(info.ShaUrl, ct); // download-ссылка — с редиректами
             var expected = shaText.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            if (expected.Length != 64 || expected.Any(c => !Uri.IsHexDigit(c)))
+            {
+                File.Delete(newExe);
+                throw new InvalidOperationException("Файл контрольной суммы обновления имеет неверный формат.");
+            }
             await using var fs = File.OpenRead(newExe);
             var actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
             if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
@@ -110,6 +117,8 @@ internal static class UpdateService
             }
             LogService.Info("Update: sha256 сошёлся");
         }
+
+        VerifyUpdateSignature(currentExe, newExe);
 
         // Самообновление БЕЗ cmd-скрипта: свежескачанный exe (.new) запускается
         // в headless-режиме /apply-update, дожидается выхода этого процесса,
@@ -140,9 +149,11 @@ internal static class UpdateService
         TryDelete(failMarker);
         TryDelete(Path.Combine(updateDir, "apply-update.cmd")); // от старых версий
 
-        if (self is null || !File.Exists(targetPath))
+        var validationError = self is null ? "не удалось определить путь helper-а" : "";
+        if (self is null || !ValidateUpdateInvocation(self, targetPath, oldPid, updateDir, out validationError))
         {
-            LogService.Error($"Updater: self={self ?? "null"}, цель существует={File.Exists(targetPath)} — отмена.");
+            LogService.Error($"Updater: небезопасные параметры запуска — {validationError}. Обновление отменено.");
+            TryWrite(failMarker, validationError);
             return;
         }
 
@@ -195,6 +206,152 @@ internal static class UpdateService
             LogService.Error("Updater: подмена удалась, но запуск новой версии не удался", ex);
         }
     }
+
+    /// <summary>
+    /// Совместимо и со старыми версиями инициатора: marker-файл не требуется.
+    /// Проверяем фактические пути helper-а, цели и EXE живого родительского PID.
+    /// Вся работа остаётся через .NET File API, поэтому кириллица в путях безопасна.
+    /// </summary>
+    private static bool ValidateUpdateInvocation(
+        string self, string targetPath, int oldPid, string updateDir, out string error)
+    {
+        error = "неизвестная ошибка";
+        try
+        {
+            var selfFull = Path.GetFullPath(self);
+            var expectedSelf = Path.GetFullPath(Path.Combine(updateDir, ExeName + ".new"));
+            var targetFull = Path.GetFullPath(targetPath);
+            if (!string.Equals(selfFull, expectedSelf, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "helper запущен не из каталога обновлений";
+                return false;
+            }
+            if (!File.Exists(targetFull))
+            {
+                error = "целевой EXE не найден";
+                return false;
+            }
+
+            using var parent = Process.GetProcessById(oldPid);
+            var parentExe = parent.MainModule?.FileName;
+            if (parent.HasExited || string.IsNullOrWhiteSpace(parentExe) ||
+                !string.Equals(Path.GetFullPath(parentExe), targetFull, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "цель не совпадает с EXE родительского процесса";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   ArgumentException or InvalidOperationException or
+                                   System.ComponentModel.Win32Exception)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static void VerifyUpdateSignature(string currentExe, string newExe)
+    {
+        var currentSigner = TryGetSignerName(currentExe);
+        var newSigner = TryGetSignerName(newExe);
+
+        // Старые релизы могли быть неподписанными. Им оставляем миграцию по SHA256,
+        // но как только пользователь находится на подписанной сборке, downgrade к
+        // неподписанному/чужому издателю запрещён.
+        if (currentSigner is null)
+        {
+            if (newSigner is not null && !HasTrustedAuthenticodeSignature(newExe))
+                throw new InvalidOperationException("Цифровая подпись обновления недействительна.");
+            LogService.Info(newSigner is null
+                ? "Update: текущая и новая сборки без подписи — используется совместимый режим SHA256"
+                : $"Update: подпись новой сборки действительна ({newSigner})");
+            return;
+        }
+
+        if (newSigner is null || !HasTrustedAuthenticodeSignature(newExe))
+            throw new InvalidOperationException("Подписанная установка не может быть обновлена неподписанным файлом.");
+        if (!string.Equals(currentSigner, newSigner, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Издатель обновления не совпадает с установленной версией ({newSigner} вместо {currentSigner}).");
+        LogService.Info($"Update: Authenticode-подпись и издатель проверены ({newSigner})");
+    }
+
+    private static string? TryGetSignerName(string path)
+    {
+        try
+        {
+            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            var name = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch (CryptographicException) { return null; }
+    }
+
+    private static bool HasTrustedAuthenticodeSignature(string path)
+    {
+        var fileInfo = new WinTrustFileInfo
+        {
+            StructSize = (uint)Marshal.SizeOf<WinTrustFileInfo>(),
+            FilePath = path,
+        };
+        var filePtr = Marshal.AllocHGlobal(Marshal.SizeOf<WinTrustFileInfo>());
+        var dataPtr = IntPtr.Zero;
+        var fileInitialized = false;
+        try
+        {
+            Marshal.StructureToPtr(fileInfo, filePtr, false);
+            fileInitialized = true;
+            var data = new WinTrustData
+            {
+                StructSize = (uint)Marshal.SizeOf<WinTrustData>(),
+                UiChoice = 2,       // WTD_UI_NONE
+                UnionChoice = 1,    // WTD_CHOICE_FILE
+                FileInfo = filePtr,
+                StateAction = 0,    // WTD_STATEACTION_IGNORE
+                ProviderFlags = 0x100, // WTD_SAFER_FLAG
+            };
+            dataPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WinTrustData>());
+            Marshal.StructureToPtr(data, dataPtr, false);
+            var action = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+            return WinVerifyTrust(new IntPtr(-1), ref action, dataPtr) == 0;
+        }
+        finally
+        {
+            if (dataPtr != IntPtr.Zero) Marshal.FreeHGlobal(dataPtr);
+            if (fileInitialized) Marshal.DestroyStructure<WinTrustFileInfo>(filePtr);
+            Marshal.FreeHGlobal(filePtr);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WinTrustFileInfo
+    {
+        public uint StructSize;
+        [MarshalAs(UnmanagedType.LPWStr)] public string FilePath;
+        public IntPtr FileHandle;
+        public IntPtr KnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WinTrustData
+    {
+        public uint StructSize;
+        public IntPtr PolicyCallbackData;
+        public IntPtr SipClientData;
+        public uint UiChoice;
+        public uint RevocationChecks;
+        public uint UnionChoice;
+        public IntPtr FileInfo;
+        public uint StateAction;
+        public IntPtr StateData;
+        public IntPtr UrlReference;
+        public uint ProviderFlags;
+        public uint UiContext;
+    }
+
+    [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int WinVerifyTrust(IntPtr hwnd, ref Guid actionId, IntPtr trustData);
 
     /// <summary>Прибить экземпляр, держащий целевой exe (точное совпадение пути):
     /// пользователь запустил старую версию вручную до окончания установки.</summary>

@@ -37,6 +37,9 @@ jobs:
       - name: Build (Release)
         run: dotnet build $env:PROJECT -c Release --no-restore
 
+      - name: Logic tests
+        run: dotnet run --project tools/logic-test/logic-test.csproj -c Release
+
       - name: Publish (single-file win-x64)
         run: |
           dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained `

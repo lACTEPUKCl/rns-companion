@@ -5,7 +5,7 @@ namespace RnsCompanion.Services;
 /// <summary>Контроль процесса игры Squad (appid 393380).</summary>
 internal static class GameProcessService
 {
-    public const int SquadAppId = 393380;
+    public const int SquadAppId = SteamJoinUrl.SquadAppId;
 
     private static readonly string[] ProcessNames =
     {
@@ -16,6 +16,9 @@ internal static class GameProcessService
     private static readonly TimeSpan GracefulTimeout = TimeSpan.FromSeconds(15);
 
     public static bool IsGameRunning() => GetGameProcesses().Count > 0;
+
+    /// <summary>Разрешаем запускать только Steam lobby-ссылки именно для Squad.</summary>
+    public static bool IsSafeJoinUrl(string? value) => SteamJoinUrl.IsSafe(value);
 
     /// <summary>Закрыть игру: сначала вежливо (CloseMainWindow), по таймауту — Kill.</summary>
     public static async Task CloseGameAsync()

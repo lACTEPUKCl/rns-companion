@@ -4,7 +4,8 @@ param([string]$OldVersion = "1.3.1")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
 
-$dir = Join-Path $env:TEMP "rns-update-test"
+# Кириллица намеренная: этот тест обязан ловить регрессии путей вида C:\Users\Иван\…
+$dir = Join-Path $env:TEMP "rns-update-тест"
 New-Item -ItemType Directory -Force $dir | Out-Null
 $exe = Join-Path $dir "RNS.Companion.exe"
 

@@ -5,6 +5,16 @@ namespace RnsCompanion.Services;
 /// <summary>Энергосбережение: гашение мониторов и сон ПК.</summary>
 internal static class PowerService
 {
+    [Flags]
+    private enum ExecutionState : uint
+    {
+        SystemRequired = 0x00000001,
+        Continuous = 0x80000000,
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern ExecutionState SetThreadExecutionState(ExecutionState esFlags);
+
     private static readonly IntPtr HwndBroadcast = new(0xFFFF);
     private const uint WmSysCommand = 0x0112;
     private static readonly IntPtr ScMonitorPower = new(0xF170);
@@ -41,6 +51,51 @@ internal static class PowerService
         catch (Exception ex)
         {
             LogService.Warn($"Не удалось погасить мониторы: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Не даёт Windows снова уснуть после срабатывания wake-таймера. Запрос живёт
+    /// на отдельном потоке до Dispose, поэтому переживает async-переходы цикла сида.
+    /// Экран при этом не удерживается включённым.
+    /// </summary>
+    public static IDisposable KeepSystemAwake(string reason)
+    {
+        var stop = new ManualResetEventSlim();
+        var ready = new ManualResetEventSlim();
+        var thread = new Thread(() =>
+        {
+            var result = SetThreadExecutionState(ExecutionState.Continuous | ExecutionState.SystemRequired);
+            if (result == 0)
+                LogService.Warn($"Не удалось запретить автоматический сон: {Marshal.GetLastWin32Error()}.");
+            else
+                LogService.Info($"Автоматический сон приостановлен ({reason}).");
+            ready.Set();
+            stop.Wait();
+            SetThreadExecutionState(ExecutionState.Continuous);
+            LogService.Info($"Запрет автоматического сна снят ({reason}).");
+        })
+        {
+            IsBackground = true,
+            Name = "RNS keep-awake",
+        };
+        thread.Start();
+        ready.Wait(TimeSpan.FromSeconds(2));
+        return new AwakeLease(stop, ready, thread);
+    }
+
+    private sealed class AwakeLease(
+        ManualResetEventSlim stop, ManualResetEventSlim ready, Thread thread) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            stop.Set();
+            thread.Join(TimeSpan.FromSeconds(2));
+            stop.Dispose();
+            ready.Dispose();
         }
     }
 

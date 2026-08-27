@@ -19,14 +19,14 @@ internal sealed class SettingsStore
         }
         catch (JsonException) { return new AppSettings(); }
         catch (IOException) { return new AppSettings(); }
+        catch (UnauthorizedAccessException) { return new AppSettings(); }
     }
 
     public void Save(AppSettings settings)
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            File.WriteAllText(_path, JsonSerializer.Serialize(settings, JsonOpts));
+            AtomicFile.WriteAllText(_path, JsonSerializer.Serialize(settings, JsonOpts));
         }
         catch (IOException ex) { LogService.Warn($"Не удалось сохранить настройки: {ex.Message}"); }
         catch (UnauthorizedAccessException ex) { LogService.Warn($"Не удалось сохранить настройки: {ex.Message}"); }

@@ -37,10 +37,12 @@ internal static class SchedulerService
         var ps =
             "$t = Get-ScheduledTask -TaskName '" + TaskName + "' -ErrorAction SilentlyContinue; " +
             "if ($null -eq $t) { exit 3 }; " +
+            "$i = Get-ScheduledTaskInfo -TaskName '" + TaskName + "' -ErrorAction SilentlyContinue; " +
             "$tr = $t.Triggers | Select-Object -First 1; " +
             "[pscustomobject]@{ State = [string]$t.State; WakeToRun = [bool]$t.Settings.WakeToRun; " +
             "TriggerType = $tr.CimClass.CimClassName; DaysInterval = [int]$tr.DaysInterval; " +
-            "StartBoundary = [string]$tr.StartBoundary } | ConvertTo-Json -Compress";
+            "StartBoundary = [string]$tr.StartBoundary; LastRunTime = [string]$i.LastRunTime; " +
+            "NextRunTime = [string]$i.NextRunTime; LastTaskResult = [int]$i.LastTaskResult } | ConvertTo-Json -Compress";
         var (exitCode, stdout, _) = RunPowerShell(ps, timeoutSec: 30);
         if (exitCode != 0 || string.IsNullOrWhiteSpace(stdout)) return null;
 
@@ -56,7 +58,13 @@ internal static class SchedulerService
             var kind = type.Contains("Daily")
                 ? $"ежедневно (интервал {root.GetProperty("DaysInterval").GetInt32()} дн.)"
                 : type.Contains("Weekly") ? "по дням недели" : "триггер другого типа";
-            return $"{kind} в {time}, WakeToRun={(wake ? "да" : "нет")}, состояние: {state}";
+            var lastResult = root.TryGetProperty("LastTaskResult", out var result)
+                ? result.GetInt32() : 0;
+            var nextText = root.TryGetProperty("NextRunTime", out var next) &&
+                           DateTime.TryParse(next.GetString(), out var nextRun)
+                ? nextRun.ToString("dd.MM HH:mm") : "—";
+            return $"{kind} в {time}, WakeToRun={(wake ? "да" : "нет")}, состояние: {state}, " +
+                   $"следующий: {nextText}, прошлый результат: 0x{lastResult:X8}";
         }
         catch (JsonException) { return "задача существует"; }
         catch (KeyNotFoundException) { return "задача существует"; }
@@ -95,11 +103,15 @@ internal static class SchedulerService
             "$s.StartWhenAvailable = $true; " +
             "$s.DisallowStartIfOnBatteries = $false; " +
             "$s.StopIfGoingOnBatteries = $false; " +
+            "$s.MultipleInstances = 'IgnoreNew'; " +
+            "$s.RestartCount = 3; " +
+            "$s.RestartInterval = 'PT1M'; " +
             "$s.ExecutionTimeLimit = 'PT0S'; " +
             "Set-ScheduledTask -TaskName '" + TaskName + "' -Settings $s -ErrorAction Stop | Out-Null";
         var (psExit, _, psErr) = RunPowerShell(ps, timeoutSec: 60);
         if (psExit != 0)
-            LogService.Warn($"Планировщик: задача создана, но настройки (WakeToRun и др.) не применены: {psErr.Trim()}");
+            throw new InvalidOperationException(
+                $"Задача создана, но WakeToRun и настройки восстановления запуска не применены: {psErr.Trim()}");
 
         LogService.Info($"Планировщик: задача «{TaskName}» сохранена " +
                         $"({(everyDay ? "ежедневно" : "дни: " + string.Join(",", days))}, " +
@@ -129,9 +141,9 @@ internal static class SchedulerService
         // регистрируем через ScheduledTasks-cmdlet'ы с interactive token (без админки).
         var user = Environment.UserDomainName + "\\" + Environment.UserName;
         var ps =
-            "$a = New-ScheduledTaskAction -Execute '\"" + exePath + "\"' -Argument '/restore-if-swapped'; " +
-            "$t = New-ScheduledTaskTrigger -AtLogOn -User '" + user + "'; " +
-            "$p = New-ScheduledTaskPrincipal -UserId '" + user + "' -LogonType Interactive; " +
+            "$a = New-ScheduledTaskAction -Execute '" + PsQuote(exePath) + "' -Argument '/restore-if-swapped'; " +
+            "$t = New-ScheduledTaskTrigger -AtLogOn -User '" + PsQuote(user) + "'; " +
+            "$p = New-ScheduledTaskPrincipal -UserId '" + PsQuote(user) + "' -LogonType Interactive; " +
             "Register-ScheduledTask -TaskName '" + RestoreGuardTaskName + "' -Action $a -Trigger $t " +
             "-Principal $p -Force -ErrorAction Stop | Out-Null";
         var (exitCode, stdout, stderr) = RunPowerShell(ps, timeoutSec: 60);
@@ -169,12 +181,15 @@ internal static class SchedulerService
         };
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Не удалось запустить {fileName}.");
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
         if (!process.WaitForExit(timeoutSec * 1000))
         {
-            try { process.Kill(); } catch (InvalidOperationException) { }
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
             throw new InvalidOperationException($"{fileName} не ответил за {timeoutSec} с.");
         }
-        return (process.ExitCode, process.StandardOutput.ReadToEnd(), process.StandardError.ReadToEnd());
+        Task.WhenAll(stdoutTask, stderrTask).GetAwaiter().GetResult();
+        return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
     }
 
     private static Encoding OemEncoding
@@ -187,9 +202,15 @@ internal static class SchedulerService
         }
     }
 
-    private static (int ExitCode, string StdOut, string StdErr) RunPowerShell(string command, int timeoutSec) =>
-        Run("powershell.exe",
-            "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" +
-            command.Replace("\"", "\\\"") + "\"",
+    private static string PsQuote(string value) => value.Replace("'", "''");
+
+    private static (int ExitCode, string StdOut, string StdErr) RunPowerShell(string command, int timeoutSec)
+    {
+        // -EncodedCommand принимает UTF-16LE: кириллица и кавычки в пути не проходят
+        // через OEM-кодировку/парсер командной строки.
+        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
+        return Run("powershell.exe",
+            "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded,
             timeoutSec);
+    }
 }

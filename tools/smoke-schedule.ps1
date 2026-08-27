@@ -76,24 +76,19 @@ $sw = [System.Windows.Automation.AutomationElement]::FromHandle($script:found)
 [W32S]::SetForegroundWindow($script:found) | Out-Null
 Start-Sleep -Milliseconds 500
 
-# 2. Включить расписание: 7-й CheckBox по порядку (индекс 6).
-$boxes = $sw.FindAll('Descendants', (New-Object System.Windows.Automation.PropertyCondition(
-  $ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::CheckBox)))
-Write-Host ("CheckBoxes found: " + $boxes.Count)
-if ($boxes.Count -lt 7) { Write-Host "FAIL: checkbox list"; Stop-Process -Id $proc.Id -Force; exit 1 }
-$schedBox = $boxes.Item(6)
+# 2. Включить расписание по стабильному AutomationId.
+$schedBox = $sw.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition(
+  $ae::AutomationIdProperty, "ChkScheduleEnabled")))
+if ($null -eq $schedBox) { Write-Host "FAIL: schedule checkbox"; Stop-Process -Id $proc.Id -Force; exit 1 }
 $tp = $schedBox.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
 if ($tp.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
   Click-Element $schedBox
-  Start-Sleep -Seconds 1
+  Start-Sleep -Seconds 5
 }
 $state = $tp.Current.ToggleState
 Write-Host ("Schedule toggle state: " + $state)
 
-# 3. Сохранить (регистрирует задачу планировщика). InvokePattern — без координат/скролла.
-$save = $sw.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, "BtnSave")))
-if ($null -eq $save) { Write-Host "FAIL: save button"; Stop-Process -Id $proc.Id -Force; exit 1 }
-$save.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+# 3. Настройки сохраняются автоматически с debounce.
 Start-Sleep -Seconds 2
 
 # Диагностика: какие окна остались после клика по «Сохранить».

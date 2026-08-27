@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\RnsCompanion\Services\ConfigSwapService.cs" Link="ConfigSwapService.cs" />
     <Compile Include="..\..\src\RnsCompanion\Services\GameProcessService.cs" Link="GameProcessService.cs" />
+    <Compile Include="..\..\src\RnsCompanion\Services\SteamJoinUrl.cs" Link="SteamJoinUrl.cs" />
     <Compile Include="..\..\src\RnsCompanion\Services\LogService.cs" Link="LogService.cs" />
     <Compile Include="..\..\src\RnsCompanion\Services\SchedulerService.cs" Link="SchedulerService.cs" />
     <EmbeddedResource Include="..\..\src\RnsCompanion\Presets\GameUserSettings.low.ini"
