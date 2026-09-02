@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using RnsCompanion.Models;
 
 namespace RnsCompanion.Services;
@@ -93,17 +94,30 @@ internal sealed class ApiClient : IDisposable
     /// <summary>steam:// ссылка подключения к серверу по имени (публичный join-link).</summary>
     public async Task<string?> GetJoinUrlAsync(string serverName, CancellationToken ct)
     {
-        using var resp = await SendAsync(HttpMethod.Get,
-            $"/api/sqb/join-link?format=json&name={Uri.EscapeDataString(serverName)}",
-            null, csrf: false, ct);
-        if (!resp.IsSuccessStatusCode) return null;
-        var data = await ReadJsonAsync<JoinLinkResponse>(resp, ct);
-        if (data?.JoinUrl is { } joinUrl && !GameProcessService.IsSafeJoinUrl(joinUrl))
+        // SQB can briefly expose a shortened browser name while seed/status still
+        // contains the full title. The website search accepts the stable RNS name.
+        var names = new List<string> { serverName };
+        var number = Regex.Match(serverName, @"#\s*(\d+)");
+        if (number.Success)
+            names.Add($"Русский Народный Сервер #{number.Groups[1].Value}");
+
+        foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            LogService.Warn("API вернул недопустимую ссылку подключения — запуск заблокирован.");
-            return null;
+            using var resp = await SendAsync(HttpMethod.Get,
+                $"/api/sqb/join-link?format=json&name={Uri.EscapeDataString(name)}",
+                null, csrf: false, ct, bypassCache: true);
+            if (!resp.IsSuccessStatusCode) continue;
+
+            var data = await ReadJsonAsync<JoinLinkResponse>(resp, ct);
+            if (data?.JoinUrl is not { } joinUrl) continue;
+            if (!GameProcessService.IsSafeJoinUrl(joinUrl))
+            {
+                LogService.Warn("API вернул недопустимую ссылку подключения — запуск заблокирован.");
+                return null;
+            }
+            return joinUrl;
         }
-        return data?.JoinUrl;
+        return null;
     }
 
     /// <summary>POST /api/seed/start {client:"desktop"} (CSRF).</summary>

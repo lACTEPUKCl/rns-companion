@@ -737,6 +737,13 @@ public partial class MainWindow : Window
                 LogService.Warn($"Публичный статус: {ex.Message}");
                 InvokeUi(() => TxtPublicStatus.Text = "Нет соединения с сервером");
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // HttpClient reports its own timeout as cancellation. Keep the
+                // tracker alive so the next normal poll can recover.
+                LogService.Warn("Публичный статус: таймаут запроса (повтор через 15 с).");
+                InvokeUi(() => TxtPublicStatus.Text = "Сервер отвечает слишком долго — повторяю…");
+            }
             catch (OperationCanceledException) { return; }
 
             // Баланс бонусов и VIP — тем же поллом, только когда залогинены
@@ -760,6 +767,10 @@ public partial class MainWindow : Window
                 catch (Exception ex) when (ex is ApiException or HttpRequestException)
                 {
                     LogService.Warn($"VIP-статус: {ex.Message}");
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    LogService.Warn("VIP-статус: таймаут запроса (опрос серверов продолжен).");
                 }
                 catch (OperationCanceledException) { return; }
             }

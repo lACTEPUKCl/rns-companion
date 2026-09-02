@@ -10,6 +10,8 @@ void Check(string name, bool condition)
 
 const string valid = "steam://joinlobby/393380/123456789/76561198000000000";
 Check("Squad join URL accepted", SteamJoinUrl.IsSafe(valid));
+Check("live two-part Squad join URL accepted",
+    SteamJoinUrl.IsSafe("steam://joinlobby/393380/109775244207089156"));
 Check("other Steam app rejected", !SteamJoinUrl.IsSafe("steam://joinlobby/730/1/2"));
 Check("other Steam command rejected", !SteamJoinUrl.IsSafe("steam://run/393380"));
 Check("web/file URL rejected", !SteamJoinUrl.IsSafe("https://example.com/file.exe") &&

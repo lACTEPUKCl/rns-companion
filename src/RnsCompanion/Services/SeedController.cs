@@ -236,6 +236,14 @@ internal sealed class SeedController
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (OperationCanceledException)
+            {
+                if (DateTime.UtcNow - lastLog > TimeSpan.FromMinutes(10))
+                {
+                    lastLog = DateTime.UtcNow;
+                    LogService.Warn("Ожидание окна набора: таймаут запроса (повторяю раз в минуту).");
+                }
+            }
             catch (ApiException ex) when (ex.IsAuthError)
             {
                 LogService.Warn("Сервер больше не принимает токен — требуется повторный вход.");
@@ -429,6 +437,11 @@ internal sealed class SeedController
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 return;
+            }
+            catch (OperationCanceledException)
+            {
+                // A request timeout is not cancellation of the seeding session.
+                LogService.Warn("Таймаут опроса набора (повтор через 30 с).");
             }
             catch (ApiException ex) when (ex.IsAuthError)
             {
