@@ -617,28 +617,44 @@ public partial class MainWindow : Window
     private static bool IsOk(ServerStatusInfo s) =>
         string.Equals(s.Status, "ok", StringComparison.OrdinalIgnoreCase);
 
+    private bool _manualConnectPending;
+
     private async void BtnConnectServer_Click(object sender, RoutedEventArgs e)
     {
+        if (_manualConnectPending) return;
         if (sender is not System.Windows.Controls.Button { DataContext: ServerRow row } btn) return;
         if (string.IsNullOrWhiteSpace(row.FullName)) return;
         btn.IsEnabled = false;
+        _manualConnectPending = true;
         try
         {
-            var url = await _api.GetJoinUrlAsync(row.FullName, CancellationToken.None);
+            var url = await _api.GetJoinUrlAsync(row.FullName, _statusPoll.Token);
             if (url is null)
             {
                 AppendJournal($"Не удалось получить ссылку подключения ({row.Title}).");
                 return;
             }
+            AppendJournal($"Подключение к {row.Title}: ожидаю загрузки главного меню по логу Squad…");
+            await GameProcessService.WaitForMenuAsync(_statusPoll.Token);
+            // Lobby IDs can change during a long startup: fetch a fresh link.
+            url = await _api.GetJoinUrlAsync(row.FullName, _statusPoll.Token);
+            _statusPoll.Token.ThrowIfCancellationRequested();
+            if (url is null)
+            {
+                AppendJournal($"Не удалось обновить ссылку подключения ({row.Title}). Нажмите подключение повторно.");
+                return;
+            }
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             AppendJournal($"Подключение к {row.Title}: ссылка открыта в Steam.");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (OperationCanceledException) when (_statusPoll.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or TimeoutException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             AppendJournal($"Подключение к {row.Title}: {ex.Message}");
         }
         finally
         {
+            _manualConnectPending = false;
             btn.IsEnabled = row.IsOnline;
         }
     }

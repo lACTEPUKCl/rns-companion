@@ -160,6 +160,7 @@ internal sealed class SeedController
             }
 
             var loop = new CancellationTokenSource();
+            var loopToken = loop.Token;
             _loop = loop;
             _scheduledMode = scheduled;
             if (scheduled)
@@ -181,7 +182,18 @@ internal sealed class SeedController
                 State.StatusText = $"Набор начнётся {DescribeOpening(ex.OpensAt)} — жду открытия…";
                 StateChanged?.Invoke();
                 LogService.Info($"Окно набора закрыто — жду открытия ({DescribeOpening(ex.OpensAt)}).");
-                _ = Task.Run(() => WaitForWindowAsync(loop.Token));
+                _ = Task.Run(() => WaitForWindowAsync(loopToken));
+                return;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException ||
+                                       ex is ApiException api && !api.IsAuthError &&
+                                       ((int)api.StatusCode >= 500 || (int)api.StatusCode is 408 or 429))
+            {
+                State.Phase = SeedPhase.Connecting;
+                State.StatusText = "Сервис временно недоступен — жду восстановления и повторяю запуск…";
+                StateChanged?.Invoke();
+                LogService.Warn($"Запуск набора отложен: {ex.Message}");
+                _ = Task.Run(() => WaitForWindowAsync(loopToken));
                 return;
             }
             catch
@@ -196,7 +208,7 @@ internal sealed class SeedController
             State.StatusText = "Набор включён. Опрашиваю сервер…";
             StateChanged?.Invoke();
 
-            _ = Task.Run(() => RunLoopAsync(loop.Token));
+            _ = Task.Run(() => RunLoopAsync(loopToken));
         }
         finally
         {
@@ -220,6 +232,7 @@ internal sealed class SeedController
                     catch (SeedWindowClosedException) { goto wait; } // окно ещё не открылось
 
                     LogService.Info("Окно набора открылось — режим включён.");
+                    _noJoinUntilUtc = InitialNoJoinUntilUtc();
                     State.Phase = SeedPhase.Connecting;
                     State.StatusText = "Набор включён. Опрашиваю сервер…";
                     StateChanged?.Invoke();
@@ -299,6 +312,7 @@ internal sealed class SeedController
             if (my?.Enabled != true) return;
 
             var loop = new CancellationTokenSource();
+            var loopToken = loop.Token;
             _loop = loop;
             _scheduledMode = false;
             _targetWasSeen = my.Target is not null;
@@ -307,7 +321,7 @@ internal sealed class SeedController
             LoadCarry(); // сид продолжается — подтягиваем накопленные минуты прошлых сессий
             LogService.Info("На сервере активно участие в наборе — продолжаю после перезапуска приложения.");
             UpdateState(my);
-            _ = Task.Run(() => RunLoopAsync(loop.Token));
+            _ = Task.Run(() => RunLoopAsync(loopToken));
         }
         finally
         {
@@ -393,6 +407,9 @@ internal sealed class SeedController
 
     private async Task RunLoopAsync(CancellationToken ct)
     {
+        var startup = new GameStartupGate();
+        var recovery = new GameRecoveryPolicy();
+        string? lastStartupStatus = null;
         LogService.Info("Цикл набора запущен (опрос каждые 30 с).");
         while (!ct.IsCancellationRequested)
         {
@@ -421,17 +438,83 @@ internal sealed class SeedController
                         return;
                     }
 
-                    if (DateTime.UtcNow >= _noJoinUntilUtc &&
-                        SeedDecisions.ShouldLaunchJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow))
+                    string? startupStatus = null;
+                    var game = GameProcessService.GetStartupState();
+                    var canJoin = startup.CanJoin(game.StartedAtUtc);
+                    // Presence can lag behind an exited process. Do not let it block recovery.
+                    if (!game.Running) my.OnTarget = false;
+                    var restartReason = recovery.GetRestartReason(game.Running, game.Responding,
+                        canJoin, my.OnTarget, game.StartedAtUtc, DateTime.UtcNow, startup.HasFatalError,
+                        startup.OnlineDisconnectedSinceUtc);
+                    if (restartReason is not null && my.Target is not null)
                     {
-                        TryApplyLowPreset();
-                        LaunchJoin(my.JoinUrl!, my.Target!.Key!);
-                        ScheduleMonitorsOffAfterGameStarts(ct);
-                        _lastJoinKey = my.Target.Key;
-                        _lastJoinUtc = DateTime.UtcNow;
+                        State.StatusText = restartReason + " — перезапускаю игру…";
+                        StateChanged?.Invoke();
+                        LogService.Warn(State.StatusText);
+                        recovery.RecordRestart(DateTime.UtcNow);
+                        await GameProcessService.CloseGameAsync(ct);
+                        ct.ThrowIfCancellationRequested();
+                        if (!GameProcessService.IsGameRunning())
+                        {
+                            startup = new GameStartupGate();
+                            _lastJoinKey = null;
+                            _lastJoinUtc = null;
+                            _noJoinUntilUtc = DateTime.MinValue;
+                            TryApplyLowPreset();
+                            ct.ThrowIfCancellationRequested();
+                            GameProcessService.StartGame();
+                            startup.RecordLaunch(DateTime.UtcNow);
+                        }
+                        await Task.Delay(PollInterval, ct);
+                        continue;
+                    }
+                    if (DateTime.UtcNow >= _noJoinUntilUtc &&
+                        SeedDecisions.ShouldAttemptJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (startup.ShouldStart(game.Running, DateTime.UtcNow))
+                        {
+                            TryApplyLowPreset();
+                            GameProcessService.StartGame();
+                            startup.RecordLaunch(DateTime.UtcNow);
+                            LogService.Info("Запускаю Squad отдельно; ссылка подключения будет отправлена после ожидания загрузки.");
+                        }
+                        if (!canJoin)
+                        {
+                            startupStatus = game.Running
+                                ? "Жду завершения загрузки главного меню в SquadGame.log…"
+                                : "Ожидаю запуска процесса Squad…";
+                            if (game.StartedAtUtc is { } started && DateTime.UtcNow - started > TimeSpan.FromMinutes(5))
+                                startupStatus = "В SquadGame.log нет подтверждения загрузки меню более 5 минут. Проверьте игру и доступность лога; ожидание продолжается.";
+                        }
+                        else
+                        {
+                            var joinUrl = my.JoinUrl;
+                            if (!SteamJoinUrl.IsSafe(joinUrl) && !string.IsNullOrWhiteSpace(my.Target!.Name))
+                                joinUrl = await _api.GetJoinUrlAsync(my.Target.Name, ct);
+                            ct.ThrowIfCancellationRequested();
+                            if (!SteamJoinUrl.IsSafe(joinUrl))
+                            {
+                                startupStatus = $"Ссылка подключения к {my.Target!.Key} пока недоступна. Повтор запроса через 30 секунд.";
+                            }
+                            else if (LaunchJoin(joinUrl!, my.Target!.Key!))
+                            {
+                                LogService.Info("Загрузка главного меню подтверждена логом текущего запуска Squad; ожидаю подтверждения входа на сервер.");
+                                ScheduleMonitorsOffAfterGameStarts(ct);
+                                _lastJoinKey = my.Target.Key;
+                                _lastJoinUtc = DateTime.UtcNow;
+                            }
+                        }
                     }
 
                     UpdateState(my);
+                    if (startupStatus is not null)
+                    {
+                        State.StatusText = startupStatus;
+                        StateChanged?.Invoke();
+                        if (startupStatus != lastStartupStatus) LogService.Info(startupStatus);
+                    }
+                    lastStartupStatus = startupStatus;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -442,6 +525,8 @@ internal sealed class SeedController
             {
                 // A request timeout is not cancellation of the seeding session.
                 LogService.Warn("Таймаут опроса набора (повтор через 30 с).");
+                State.StatusText = "Нет ответа сервиса — набор активен, повтор через 30 секунд…";
+                StateChanged?.Invoke();
             }
             catch (ApiException ex) when (ex.IsAuthError)
             {
@@ -457,6 +542,16 @@ internal sealed class SeedController
             catch (Exception ex) when (ex is ApiException or HttpRequestException)
             {
                 LogService.Warn($"Ошибка опроса: {ex.Message} (повтор через 30 с).");
+                State.StatusText = "Сервис недоступен — набор активен, повтор через 30 секунд…";
+                StateChanged?.Invoke();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                LogService.Error("Не удалось запустить игру/подключение (повтор через 30 с)", ex);
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("Ошибка цикла набора — повтор через 30 с", ex);
             }
 
             try { await Task.Delay(PollInterval, ct); }
@@ -535,27 +630,29 @@ internal sealed class SeedController
             State.Phase = SeedPhase.Connecting;
             State.StatusText = my.Target is null
                 ? "Ожидаю цель набора…"
-                : "Подключаемся к серверу… (Steam сам подключит игру из главного меню)";
+                : "Ожидаю подключения к серверу… Повторные попытки — раз в 2 минуты.";
         }
 
         StateChanged?.Invoke();
     }
 
-    private void LaunchJoin(string joinUrl, string targetKey)
+    private bool LaunchJoin(string joinUrl, string targetKey)
     {
         if (!GameProcessService.IsSafeJoinUrl(joinUrl))
         {
             LogService.Warn($"Ссылка подключения к {targetKey} отклонена: ожидалась steam://joinlobby/{GameProcessService.SquadAppId}/…");
-            return;
+            return false;
         }
         try
         {
             Process.Start(new ProcessStartInfo(joinUrl) { UseShellExecute = true });
             LogService.Info($"Запущена ссылка подключения к {targetKey}: {joinUrl}");
+            return true;
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             LogService.Error($"Не удалось открыть {joinUrl}", ex);
+            return false;
         }
     }
 
