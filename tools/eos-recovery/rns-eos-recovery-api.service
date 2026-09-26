@@ -1,0 +1,17 @@
+[Unit]
+Description=Private RNS recovery status and manual queue API
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/rns-eos-recovery/api.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/rns-eos-recovery
+
+[Install]
+WantedBy=multi-user.target

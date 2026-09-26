@@ -1,0 +1,16 @@
+[Unit]
+Description=RNS Squad EOS recovery guard
+After=network-online.target squad-lobby.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/rns-eos-recovery/controller.py /etc/rns-eos-recovery/controller.json
+User=root
+UMask=0077
+TimeoutStartSec=600
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/rns-eos-recovery

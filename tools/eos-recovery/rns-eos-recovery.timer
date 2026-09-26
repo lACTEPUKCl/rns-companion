@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Squad EOS recovery conditions every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+AccuracySec=1
+Unit=rns-eos-recovery.service
+
+[Install]
+WantedBy=timers.target
