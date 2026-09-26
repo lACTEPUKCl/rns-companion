@@ -28,12 +28,12 @@ class PolicyTests(unittest.TestCase):
         observe(s, True, 2060)
         self.assertEqual(observe(s, False, 2120), 'blocked')
 
-    def test_success_does_not_remove_cooldown_or_limit(self):
+    def test_success_allows_next_incident_after_verification_window(self):
         s = {'pending': True, 'last_attempt': 1000, 'attempts': 1}
         self.assertEqual(observe(s, True, 1060), 'recovered')
         self.assertEqual(observe(s, False, 1120), 'cooldown')
         s['attempts'] = 3
-        self.assertEqual(observe(s, False, 30000), 'limit')
+        self.assertEqual(observe(s, False, 1360), 'missing')
 
     def test_reused_fd_and_new_process_rejected(self):
         old = {'identity': {'pid': 1}, 'candidates': [{'fd': 33, 'inode': 'old'}]}

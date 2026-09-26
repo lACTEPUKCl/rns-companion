@@ -9,7 +9,7 @@ class ApiTests(unittest.TestCase):
 
     def test_reject_healthy_stale_unknown_and_blocked(self):
         self.assertEqual(enqueue(self.cfg,self.state,'other','owner',1001)[0],404)
-        for field,value in [('presence',True),('checked_at',100),('blocked',True),('attempts',3)]:
+        for field,value in [('presence',True),('checked_at',100),('blocked',True)]:
             state={'mod-4':{**self.state['mod-4'],field:value}}
             self.assertEqual(enqueue(self.cfg,state,'mod-4','owner',1001)[0],409)
             self.assertNotIn('manual_request',state['mod-4'])

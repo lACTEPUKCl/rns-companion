@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 
 from icmp_recovery import inspect_socket, probe
-from policy import COOLDOWN, MAX_ATTEMPTS
+from policy import COOLDOWN
 
 ROOT = Path('/var/lib/rns-eos-recovery')
 CONFIG = Path('/etc/rns-eos-recovery/targets.json')
@@ -197,7 +197,7 @@ def main():
         if state.get('identity') != sample['identity']:
             state = {'identity': sample['identity'], 'attempts': 0}
         now = time.time()
-        if state.get('blocked') or state['attempts'] >= MAX_ATTEMPTS:
+        if state.get('blocked'):
             raise RuntimeError('Host recovery limit/lockout')
         if now - state.get('last_attempt', 0) < COOLDOWN:
             raise RuntimeError('Host recovery cooldown')

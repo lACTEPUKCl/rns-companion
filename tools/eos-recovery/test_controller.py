@@ -39,14 +39,14 @@ class ControllerTests(unittest.TestCase):
         self.clock += 60
         return result
 
-    def test_recovery_once_then_success(self):
+    def test_recovers_again_after_success_and_new_outage(self):
         for _ in range(5):
             self.tick()
         self.assertEqual(sum(x['action'] == 'recover' for x in self.calls), 1)
         self.tick(present=True)
         for _ in range(6):
             self.tick()
-        self.assertEqual(sum(x['action'] == 'recover' for x in self.calls), 1)
+        self.assertEqual(sum(x['action'] == 'recover' for x in self.calls), 2)
 
     def test_ambiguous_ssh_outcome_is_latched(self):
         def failing(cfg, target, req):

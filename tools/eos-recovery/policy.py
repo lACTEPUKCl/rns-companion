@@ -1,6 +1,6 @@
 """Pure recovery policy shared by controller and tests."""
-COOLDOWN = 6 * 3600
-MAX_ATTEMPTS = 3  # Per process lifetime, even if previous recoveries succeeded.
+COOLDOWN = 5 * 60
+
 
 
 def observe(state, present, now):
@@ -33,8 +33,6 @@ def observe(state, present, now):
         return 'verifying'
     if state.get('blocked'):
         return 'blocked'
-    if state.get('attempts', 0) >= MAX_ATTEMPTS:
-        return 'limit'
     if state.get('last_attempt') and now - state['last_attempt'] < COOLDOWN:
         return 'cooldown'
     return 'candidate' if state['misses'] >= 5 else 'missing'

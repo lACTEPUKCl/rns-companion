@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 
 import controller
-from policy import COOLDOWN, MAX_ATTEMPTS
+from policy import COOLDOWN
 
 CONFIG = Path('/etc/rns-eos-recovery/controller.json')
 
@@ -23,10 +23,8 @@ def reason(state, now):
         return 'Нет свежей проверки EOS'
     if state.get('presence') is not False:
         return 'Сервер уже в браузере'
-    if state.get('attempts', 0) >= MAX_ATTEMPTS:
-        return 'Достигнут лимит попыток для этого процесса'
     if state.get('last_attempt') and now - state['last_attempt'] < COOLDOWN:
-        return 'Следующая попытка возможна через 6 часов после предыдущей'
+        return 'Следующая попытка возможна через 5 минут после предыдущей'
     return None
 
 
