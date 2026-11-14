@@ -121,7 +121,7 @@ public partial class MainWindow : Window
         NavJournal.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
 
         // Если набор был включён до перезапуска приложения — подхватываем его.
-        if (!scheduledLaunch && _api.Token is not null && GameProcessService.IsGameRunning())
+        if (!scheduledLaunch)
             _ = _seed.ResumeAsync(CancellationToken.None);
 
         _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -164,6 +164,8 @@ public partial class MainWindow : Window
             {
                 if (settings.ScheduleEnabled)
                 {
+                    if (!ScheduleLaunchPolicy.TryGetTime(settings.ScheduleTime, out _))
+                        throw new InvalidOperationException("Исправьте время запуска в настройках расписания.");
                     var days = settings.ScheduleEveryDay
                         ? Enum.GetValues<DayOfWeek>().ToList()
                         : settings.ScheduleDays
@@ -874,6 +876,7 @@ public partial class MainWindow : Window
         BtnUpdate.Content = "0%";
         try
         {
+            _seed.PrepareForRestart();
             await UpdateService.DownloadAndSwapAsync(info, CancellationToken.None, progress);
             TxtUpdate.Text = $"Обновление v{info.Version} скачано — приложение закроется и откроется само. " +
                              "Не запускайте его вручную, подождите ~1 минуту.";
@@ -888,7 +891,7 @@ public partial class MainWindow : Window
         {
             LogService.Error("Автообновление не удалось", ex);
             AppendJournal($"Не удалось обновиться: {ex.Message}");
-            TxtUpdate.Text = $"Не удалось скачать обновление v{info.Version} — попробуйте ещё раз";
+            TxtUpdate.Text = $"Не удалось завершить обновление v{info.Version} — {ex.Message}";
             BtnUpdate.Content = "Обновить";
             BtnUpdate.IsEnabled = true;
             BtnUpdateLater.IsEnabled = true;
@@ -976,12 +979,13 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private void ApplySettings(AppSettings s)
+    private bool ApplySettings(AppSettings s)
     {
+        if (!_settingsStore.Save(s)) return false;
         _settings = s;
-        _settingsStore.Save(s);
         _api.BaseUrl = s.BaseUrl;
         NavJournal.Visibility = s.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
+        return true;
     }
 
     private void AppendJournal(string line)

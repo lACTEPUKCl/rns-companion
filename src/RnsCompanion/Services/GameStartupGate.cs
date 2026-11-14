@@ -8,6 +8,10 @@ internal sealed class GameStartupGate
     private DateTime? _launchUtc;
 
     public bool CanJoin(DateTime? processStartUtc) => _log.IsReady(processStartUtc);
+    public bool HasUnreadData => _log.HasUnreadData;
+    public bool IsCaughtUp => _log.IsCaughtUp;
+    public DateTime? ConnectionPendingUtc => _log.ConnectionPendingUtc;
+    public string? ConnectedEndpoint => _log.ConnectedEndpoint;
     public DateTime? LastServerJoinUtc => _log.LastServerJoinUtc;
     public bool HasFatalError => _log.HasFatalError;
     public DateTime? OnlineDisconnectedSinceUtc => _log.OnlineDisconnectedSinceUtc;

@@ -134,4 +134,64 @@ await seed.StartAsync(false, default);
 await seed.StopAsync();
 await Task.Delay(100);
 Check("Stop cancels pending recovery", !seed.IsRunning);
+api = new ApiClient { Token = null, Status = () => Task.FromResult<AutoseedStatusResponse?>(new()
+{
+    Ok = true, Window = new() { Open = true }, AllSeeded = false,
+}) };
+seed = Controller(api);
+await seed.StartAsync(true, default);
+seed.PrepareForRestart();
+seed.Shutdown();
+var resumedGuest = Controller(api);
+await resumedGuest.ResumeAsync(default);
+Check("guest seeding resumes after update without logging in", resumedGuest.IsRunning && api.Token is null);
+await resumedGuest.StopAsync();
+Check("Stop clears persisted active seeding", SeedRunStore.Snapshot is null);
+
+GameProcessService.Running = true;
+GameStartupGate.Pending = true;
+GameStartupGate.OfflineSince = DateTime.UtcNow.AddHours(-1);
+var startsBeforeQueue = GameProcessService.Starts;
+api = new ApiClient { Read = () => Task.FromResult<AutoseedMyResponse?>(Presence(false)) };
+seed = Controller(api);
+await seed.StartAsync(false, default);
+await Until(() => seed.State.StatusText.Contains("Очередь"));
+Check("actual controller preserves queue without restarting game", seed.IsRunning && GameProcessService.Starts == startsBeforeQueue);
+await seed.StopAsync();
+GameStartupGate.Pending = false;
+GameStartupGate.OfflineSince = null;
+
+GameStartupGate.Connected = "127.0.0.1:7787";
+GameStartupGate.LastConnected = DateTime.UtcNow;
+api = new ApiClient { Token = null, Status = () => Task.FromResult<AutoseedStatusResponse?>(new()
+{
+    Ok = true, Window = new() { Open = true }, AllSeeded = false, Target = new() { Key = "test", Name = "test" },
+}) };
+SeedRunStore.Snapshot = new() { Guest = true, BootId = "test-boot", LastJoinKey = "test", LastJoinUtc = DateTime.UtcNow.AddMinutes(-5), ExpectedEndpoint = "127.0.0.1:7787" };
+seed = Controller(api);
+await seed.ResumeAsync(default);
+await Until(() => seed.State.Phase == SeedPhase.OnTarget);
+Check("guest confirms matching endpoint after update without reconnect", seed.IsRunning);
+await seed.StopAsync();
+GameStartupGate.Connected = "127.0.0.1:7788";
+SeedRunStore.Snapshot = new() { Guest = true, BootId = "test-boot", LastJoinKey = "test", LastJoinUtc = DateTime.UtcNow.AddMinutes(-5), ExpectedEndpoint = "127.0.0.1:7787" };
+seed = Controller(api);
+await seed.ResumeAsync(default);
+await Until(() => seed.State.StatusText.Contains("Ссылка подключения"));
+Check("guest cannot confirm a different server", seed.State.Phase != SeedPhase.OnTarget);
+await seed.StopAsync();
+GameStartupGate.Connected = null;
+GameStartupGate.LastConnected = null;
+
+var pendingResponse = new TaskCompletionSource<AutoseedMyResponse?>(TaskCreationOptions.RunContinuationsAsynchronously);
+var requestStarted = false;
+api = new ApiClient { Read = () => { requestStarted = true; return pendingResponse.Task; } };
+seed = Controller(api);
+await seed.StartAsync(false, default);
+await Until(() => requestStarted);
+await seed.StopAsync();
+pendingResponse.SetResult(Presence());
+await Task.Delay(100);
+Check("late response after Stop cannot restore active seeding", !seed.IsRunning && seed.State.Phase == SeedPhase.Idle && SeedRunStore.Snapshot is null);
+
 Console.WriteLine("ALL RECOVERY TESTS PASSED");

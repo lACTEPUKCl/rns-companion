@@ -16,7 +16,7 @@ public partial class SettingsWindow : Window
 {
     private static readonly TimeSpan ScheduleDebounce = TimeSpan.FromMilliseconds(1200);
 
-    private readonly Action<AppSettings> _onChange;
+    private readonly Func<AppSettings, bool> _onChange;
     private readonly string _baseUrl;
     private readonly (CheckBox Box, DayOfWeek Day)[] _dayBoxes;
     private readonly DispatcherTimer _scheduleTimer;
@@ -25,7 +25,7 @@ public partial class SettingsWindow : Window
     private bool _scheduleBusy;  // фоновая регистрация задачи
     private bool _schedulePending;
 
-    public SettingsWindow(AppSettings current, Action<AppSettings> onChange)
+    public SettingsWindow(AppSettings current, Func<AppSettings, bool> onChange)
     {
         InitializeComponent();
         _onChange = onChange;
@@ -150,8 +150,7 @@ public partial class SettingsWindow : Window
 
     private void OnSimpleChanged()
     {
-        _onChange(BuildSettings());
-        MarkSaved();
+        if (!SaveSettings()) return;
         if (ChkLowGraphics.IsChecked == true)
         {
             // RestoreGuard должен появиться сразу после включения low-graphics,
@@ -164,14 +163,32 @@ public partial class SettingsWindow : Window
     private void OnScheduleChanged()
     {
         RefreshScheduleUi();
-        _onChange(BuildSettings()); // состояние контролов персистим сразу
-        MarkSaved();
+        if (!SaveSettings()) { _scheduleTimer.Stop(); return; }
         _scheduleTimer.Stop();    // а задачу в ОС применяем, когда пользователь «докликал»
         _scheduleTimer.Start();
     }
 
-    private void MarkSaved() =>
+    private bool SaveSettings()
+    {
+        var settings = BuildSettings();
+        if (settings.ScheduleEnabled &&
+            (!ScheduleLaunchPolicy.TryGetTime(settings.ScheduleTime, out _) ||
+             (!settings.ScheduleEveryDay && settings.ScheduleDays.Count == 0)))
+        {
+            TxtSaved.Text = "Укажите время от 00:00 до 23:59 и дни запуска.";
+            TxtSaved.Foreground = (System.Windows.Media.Brush)FindResource("Red");
+            return false;
+        }
+        if (!_onChange(settings))
+        {
+            TxtSaved.Text = "Не удалось сохранить настройки. Проверьте доступ к папке приложения.";
+            TxtSaved.Foreground = (System.Windows.Media.Brush)FindResource("Red");
+            return false;
+        }
         TxtSaved.Text = "Сохранено ✓ " + DateTime.Now.ToString("HH:mm:ss");
+        TxtSaved.Foreground = (System.Windows.Media.Brush)FindResource("Green");
+        return true;
+    }
 
     // ─────────────────── Планировщик (фон, с дебаунсом) ───────────────────
 
@@ -183,6 +200,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        if (!SaveSettings()) return;
         var s = BuildSettings();
         var days = s.ScheduleEveryDay
             ? Enum.GetValues<DayOfWeek>().ToList()
@@ -191,7 +209,7 @@ public partial class SettingsWindow : Window
         if (s.ScheduleEnabled)
         {
             // Невалидные дни/время — задачу не трогаем, подсказка уже в TxtScheduleConfirm.
-            if (!TimeSpan.TryParse(s.ScheduleTime, out _) || days.Count == 0)
+            if (!ScheduleLaunchPolicy.TryGetTime(s.ScheduleTime, out _) || days.Count == 0)
                 return;
         }
 
@@ -274,7 +292,7 @@ public partial class SettingsWindow : Window
 
         var everyDay = RbEveryDay.IsChecked == true;
         var days = SelectedDays();
-        var timeOk = TimeSpan.TryParse(TxtTime.Text.Trim(), out var time);
+        var timeOk = ScheduleLaunchPolicy.TryGetTime(TxtTime.Text.Trim(), out var time);
         var timeText = timeOk ? time.ToString(@"hh\:mm") : "—";
 
         string when;
@@ -306,6 +324,7 @@ public partial class SettingsWindow : Window
         if (_busy) return;
         _busy = true;
         ChkScheduleEnabled.IsChecked = false;
+        if (!SaveSettings()) { _busy = false; return; }
         _scheduleTimer.Stop();
         while (_scheduleBusy) await Task.Delay(50);
         _schedulePending = false;

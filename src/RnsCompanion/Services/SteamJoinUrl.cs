@@ -16,4 +16,14 @@ internal static class SteamJoinUrl
             .FirstOrDefault();
         return string.Equals(appId, SquadAppId.ToString(), StringComparison.Ordinal);
     }
+    public static string? NormalizeEndpoint(string? value)
+    {
+        var parts = value?.Split(':');
+        if (parts is not { Length: 2 } ||
+            !System.Net.IPAddress.TryParse(parts[0], out var host) ||
+            host.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+            !int.TryParse(parts[1], out var port) || port < 1 || port > 65535)
+            return null;
+        return host + ":" + port;
+    }
 }

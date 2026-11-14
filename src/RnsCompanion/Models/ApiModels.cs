@@ -93,6 +93,7 @@ public sealed class VipMyResponse
 /// <summary>GET /api/sqb/join-link?format=json → { joinUrl }</summary>
 public sealed class JoinLinkResponse
 {
+    [JsonPropertyName("serverEndpoint")] public string? ServerEndpoint { get; set; }
     [JsonPropertyName("joinUrl")] public string? JoinUrl { get; set; }
 }
 

@@ -12,9 +12,9 @@ internal static class SeedDecisions
         => SteamJoinUrl.IsSafe(my.JoinUrl) && ShouldAttemptJoin(my, lastJoinKey, lastJoinUtc, nowUtc);
 
     public static bool ShouldAttemptJoin(
-        AutoseedMyResponse my, string? lastJoinKey, DateTime? lastJoinUtc, DateTime nowUtc)
+        AutoseedMyResponse my, string? lastJoinKey, DateTime? lastJoinUtc, DateTime nowUtc, bool connectionPending = false)
     {
-        if (!my.Enabled || my.OnTarget) return false;
+        if (!my.Enabled || my.OnTarget || connectionPending) return false;
         if (my.Target?.Key is not { Length: > 0 } key) return false;
         if (lastJoinKey != key || lastJoinUtc is null) return true;
         return nowUtc - lastJoinUtc.Value >= JoinMinInterval;

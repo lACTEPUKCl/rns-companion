@@ -15,6 +15,7 @@ internal sealed class ApiClient
     public Task StartSeedAsync(CancellationToken ct) => Start();
     public Task StopSeedAsync(CancellationToken ct) => Task.CompletedTask;
     public Task<AutoseedStatusResponse?> GetStatusAsync(CancellationToken ct) => Status();
+    public string? GetServerEndpoint(string name) => "127.0.0.1:7787";
     public Task<string?> GetJoinUrlAsync(string name, CancellationToken ct) => Task.FromResult<string?>(null);
 }
 internal sealed class ApiException(HttpStatusCode status, string message) : Exception(message)
@@ -43,7 +44,14 @@ internal static class GameProcessService
 internal sealed class GameStartupGate
 {
     public static bool Fatal;
-    public DateTime? LastServerJoinUtc => null;
+    public static bool Pending;
+    public bool HasUnreadData => false;
+    public bool IsCaughtUp => true;
+    public DateTime? ConnectionPendingUtc => Pending ? DateTime.UtcNow : null;
+    public static string? Connected;
+    public static DateTime? LastConnected;
+    public string? ConnectedEndpoint => Connected;
+    public DateTime? LastServerJoinUtc => LastConnected;
     public bool HasFatalError => Fatal;
     public static DateTime? OfflineSince;
     public DateTime? OnlineDisconnectedSinceUtc => OfflineSince;
@@ -71,4 +79,24 @@ internal static class PowerService
     public static IDisposable KeepSystemAwake(string reason) => new Lease();
     public static void MonitorsOff() => throw new Exception("Unexpected monitor action");
     public static void Sleep() => throw new Exception("Unexpected sleep action");
+}
+
+internal sealed record SeedRunSnapshot
+{
+    public string? BootId { get; init; }
+    public bool Guest { get; init; }
+    public bool Scheduled { get; init; }
+    public bool WasOnTarget { get; init; }
+    public DateTime? GameStartedAtUtc { get; init; }
+    public string? LastJoinKey { get; init; }
+    public DateTime? LastJoinUtc { get; init; }
+    public string? ExpectedEndpoint { get; init; }
+}
+internal sealed class SeedRunStore
+{
+    public static SeedRunSnapshot? Snapshot;
+    public static string CurrentBootId() => "test-boot";
+    public SeedRunSnapshot? Load(string? boot, DateTime? gameStart) => Snapshot;
+    public void Save(SeedRunSnapshot state) => Snapshot = state;
+    public void Clear() => Snapshot = null;
 }

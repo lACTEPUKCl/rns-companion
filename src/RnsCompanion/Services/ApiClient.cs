@@ -24,6 +24,8 @@ internal sealed class ApiClient : IDisposable
 
     private string _baseUrl = DefaultBaseUrl;
     private string? _csrfToken;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _serverEndpoints = new(StringComparer.OrdinalIgnoreCase);
+    public string? GetServerEndpoint(string name) => _serverEndpoints.TryGetValue(name, out var endpoint) ? endpoint : null;
 
     public string? Token { get; set; }
 
@@ -62,7 +64,7 @@ internal sealed class ApiClient : IDisposable
         };
         _http = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(25),
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan,
             MaxResponseContentBufferSize = 5 * 1024 * 1024,
         };
         _http.DefaultRequestHeaders.UserAgent.Add(
@@ -107,7 +109,7 @@ internal sealed class ApiClient : IDisposable
         foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             using var resp = await SendAsync(HttpMethod.Get,
-                $"/api/sqb/join-link?format=json&name={Uri.EscapeDataString(name)}",
+                $"/api/sqb/join-link?format=json&includeEndpoint=1&name={Uri.EscapeDataString(name)}",
                 null, csrf: false, ct, bypassCache: true);
             if (!resp.IsSuccessStatusCode) continue;
 
@@ -118,6 +120,8 @@ internal sealed class ApiClient : IDisposable
                 LogService.Warn("API вернул недопустимую ссылку подключения — запуск заблокирован.");
                 return null;
             }
+            var endpoint = SteamJoinUrl.NormalizeEndpoint(data.ServerEndpoint);
+            if (endpoint is not null) _serverEndpoints[serverName] = endpoint;
             return joinUrl;
         }
         return null;
@@ -225,7 +229,10 @@ internal sealed class ApiClient : IDisposable
     {
         // Only reads may be retried. A lost POST response can already represent
         // a completed purchase or account operation on the server.
-        var attempts = method == HttpMethod.Get ? 3 : 1;
+        var creatingJoinLink = path.StartsWith("/api/sqb/join-link?", StringComparison.Ordinal);
+        var waitsForLobby = creatingJoinLink || path == "/api/seed/my";
+        var attempts = method == HttpMethod.Get && !waitsForLobby ? 3 : 1;
+        var requestTimeout = waitsForLobby ? TimeSpan.FromSeconds(95) : TimeSpan.FromSeconds(25);
         for (var attempt = 0; attempt < attempts; attempt++)
         {
             using var req = new HttpRequestMessage(method, _baseUrl + path);
@@ -244,7 +251,9 @@ internal sealed class ApiClient : IDisposable
             req.Content = content;
             try
             {
-                var response = await _http.SendAsync(req, ct);
+                using var requestTimeoutSource = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                requestTimeoutSource.CancelAfter(requestTimeout);
+                var response = await _http.SendAsync(req, requestTimeoutSource.Token);
                 if (method == HttpMethod.Get && attempt + 1 < attempts &&
                     (response.StatusCode == HttpStatusCode.BadGateway ||
                      response.StatusCode == HttpStatusCode.ServiceUnavailable ||

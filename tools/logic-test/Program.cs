@@ -174,6 +174,7 @@ try
         $"[{stamp}][  0]LogLoad: Took 2.310640 seconds to LoadMap(/Game/Maps/Sumari/Gameplay_Layers/Sumari_Seed_v1)\n");
     serverLog.IsReady(serverStart);
     Check("actual Squad welcome and loaded map confirm guest entry", serverLog.LastServerJoinUtc is not null);
+    Check("guest confirmation retains actual game endpoint", serverLog.ConnectedEndpoint == "127.0.0.1:7787");
     File.AppendAllText(serverLogPath, $"[{stamp}][  0]LogNet: Network Failure: ConnectionLost\n");
     serverLog.IsReady(serverStart);
     Check("network failure clears guest server confirmation", serverLog.LastServerJoinUtc is null);
@@ -183,6 +184,57 @@ try
     Check("map alone cannot confirm a remote server", serverLog.LastServerJoinUtc is null);
 }
 finally { File.Delete(serverLogPath); }
+
+Check("queue blocks retries even after hours", !SeedDecisions.ShouldAttemptJoin(response, null, null, now.AddHours(2), connectionPending: true));
+Check("IPv4 game endpoint is normalized", SteamJoinUrl.NormalizeEndpoint("195.18.27.172:27180") == "195.18.27.172:27180");
+Check("invalid public endpoint is rejected", SteamJoinUrl.NormalizeEndpoint("example.org:99999") is null);
+var queueLogPath = Path.GetTempFileName();
+try
+{
+    var stamp = now.ToString("yyyy.MM.dd-HH.mm.ss:fff", System.Globalization.CultureInfo.InvariantCulture);
+    File.WriteAllText(queueLogPath, $"[{stamp}][  0]LogUIActionRouter: Display: Applying input config for leaf-most node [WBP_QueueInfo_C_2147418015]\n");
+    var queueLog = new SquadStartupLog(queueLogPath);
+    queueLog.IsReady(now.AddMinutes(-1));
+    Check("real Squad queue widget marks connection pending", queueLog.ConnectionPendingUtc is not null);
+    queueLog.IsReady(now.AddMinutes(-1));
+    Check("quiet queue stays protected without periodic log messages", queueLog.ConnectionPendingUtc is not null);
+    File.AppendAllText(queueLogPath, $"[{stamp}][  0]LogUIActionRouter: Display: Applying input config for leaf-most node [WBP_ServersScreen_C_123]\n");
+    queueLog.IsReady(now.AddMinutes(-1));
+    Check("return to browser releases queue protection", queueLog.ConnectionPendingUtc is null);
+    File.AppendAllText(queueLogPath, $"[{stamp}][  0]LogSquad: Chat Msg Player[Example]: LogUIActionRouter: Display: Applying input config for leaf-most node [WBP_QueueInfo_C_123]\n");
+    File.AppendAllText(queueLogPath, $"[{stamp}][  0]LogSquad: Chat Msg Player[Example]: LogWindows: Error: Fatal error:\n");
+    queueLog.IsReady(now.AddMinutes(-1));
+    Check("chat messages cannot fake queue or crash events", queueLog.ConnectionPendingUtc is null && !queueLog.HasFatalError);
+}
+finally { File.Delete(queueLogPath); }
+
+var statePath = Path.GetTempFileName();
+try
+{
+    var store = new SeedRunStore(statePath);
+    var snapshot = new SeedRunSnapshot { BootId = "boot-one", Guest = true, Scheduled = true, LastJoinKey = "vanila-2", GameStartedAtUtc = now };
+    store.Save(snapshot);
+    var restored = new SeedRunStore(statePath).Load("boot-one", now);
+    Check("guest and scheduled state survive process restart", restored == snapshot);
+    Check("cold boot cannot resume stale seeding", store.Load("boot-two", null) is null);
+    Check("matching game allows fallback without registry boot id", store.Load(null, now) == snapshot);
+    Check("different game is rejected when boot id is unavailable", store.Load(null, now.AddMinutes(2)) is null);
+    store.Clear();
+    Check("explicit stop removes restart consent", !File.Exists(statePath));
+}
+finally { if (File.Exists(statePath)) File.Delete(statePath); }
+var blockedSettingsPath = Path.GetTempFileName();
+var originalDataDir = LogService.DataDir;
+try
+{
+    LogService.DataDir = blockedSettingsPath;
+    Check("settings write failure is reported", !new SettingsStore().Save(new AppSettings()));
+}
+finally { LogService.DataDir = originalDataDir; File.Delete(blockedSettingsPath); }
+
+Check("partial time cannot silently become midnight", !ScheduleLaunchPolicy.TryGetTime("1", out _));
+Check("24-hour boundary is invalid", !ScheduleLaunchPolicy.TryGetTime("24:00", out _));
+Check("legacy single-digit hour is accepted", ScheduleLaunchPolicy.TryGetTime("9:00", out var legacyTime) && legacyTime == TimeSpan.FromHours(9));
 
 var schedule = new AppSettings { ScheduleEnabled = true, ScheduleTime = "09:00" };
 var morning = new DateTime(2026, 11, 14, 9, 1, 0);

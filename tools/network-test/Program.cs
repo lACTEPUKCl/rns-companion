@@ -12,6 +12,18 @@ static HttpResponseMessage Json(string value) => new(HttpStatusCode.OK)
     Content = new StringContent(value, System.Text.Encoding.UTF8, "application/json"),
 };
 
+if (args.Contains("--live"))
+{
+    using var live = new ApiClient();
+    var status = await live.GetStatusAsync(default);
+    Check("live public status works through the actual .NET client", status?.Ok == true);
+    var name = status?.Servers?.FirstOrDefault()?.Name ?? throw new Exception("No public server available");
+    var url = await live.GetJoinUrlAsync(name, default);
+    Check("live client receives safe Squad lobby URL", SteamJoinUrl.IsSafe(url));
+    Check("live client receives verified game endpoint", SteamJoinUrl.NormalizeEndpoint(live.GetServerEndpoint(name)) is not null);
+    return;
+}
+
 var attempts = 0;
 using (var client = new ApiClient(new FakeHandler((request, ct) =>
 {
@@ -73,6 +85,19 @@ using (var client = new ApiClient(new FakeHandler((request, ct) =>
     try { await client.GetStatusAsync(cancel.Token); throw new Exception("Expected cancellation"); }
     catch (OperationCanceledException) { Check("user cancellation stops network retries", true); }
 }
+attempts = 0;
+using (var client = new ApiClient(new FakeHandler(async (request, ct) =>
+{
+    attempts++;
+    await Task.Delay(TimeSpan.FromSeconds(26), ct);
+    return Json("{\"joinUrl\":\"steam://joinlobby/393380/123\",\"serverEndpoint\":\"195.18.27.172:27180\"}");
+})))
+{
+    var join = await client.GetJoinUrlAsync("RNS", default);
+    Check("lobby creation survives the old 25-second timeout", join == "steam://joinlobby/393380/123" && attempts == 1);
+    Check("verified game endpoint is retained for target confirmation", client.GetServerEndpoint("RNS") == "195.18.27.172:27180");
+}
+
 Console.WriteLine("ALL NETWORK TESTS PASSED");
 
 internal sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler

@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../src/RnsCompanion/Services/SeedRunStore.cs" Link="SeedRunStore.cs" />
+    <Compile Include="../../src/RnsCompanion/Services/SettingsStore.cs" Link="SettingsStore.cs" />
+    <Compile Include="../../src/RnsCompanion/Services/AtomicFile.cs" Link="AtomicFile.cs" />
     <Compile Include="../../src/RnsCompanion/Models/AppSettings.cs" Link="AppSettings.cs" />
     <Compile Include="../../src/RnsCompanion/Services/ScheduleLaunchPolicy.cs" Link="ScheduleLaunchPolicy.cs" />
     <Compile Include="..\..\src\RnsCompanion\Services\GameRecoveryPolicy.cs" Link="GameRecoveryPolicy.cs" />

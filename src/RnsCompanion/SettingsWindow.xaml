@@ -133,11 +133,11 @@
           </Border>
 
           <!-- Автосохранение -->
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <StackPanel>
             <TextBlock x:Name="TxtSaved" Style="{StaticResource HintText}" FontSize="11"
-                       Foreground="{StaticResource Green}" VerticalAlignment="Center"/>
+                       Foreground="{StaticResource Green}" TextAlignment="Right" TextWrapping="Wrap"/>
             <TextBlock Style="{StaticResource HintText}" FontSize="11" VerticalAlignment="Center"
-                       Margin="8,0,0,0" Text="Изменения сохраняются автоматически"/>
+                       Margin="0,4,0,0" TextAlignment="Right" Text="Изменения сохраняются автоматически"/>
           </StackPanel>
         </StackPanel>
       </ScrollViewer>

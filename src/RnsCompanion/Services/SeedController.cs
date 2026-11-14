@@ -57,6 +57,11 @@ internal sealed class SeedController
     private bool _wasOnTarget;
     private bool _scheduledMode;
     private bool _guestMode;
+    private readonly SeedRunStore _runStore = new();
+    private readonly object _runStoreGate = new();
+    private readonly string? _bootId = SeedRunStore.CurrentBootId();
+    private string? _expectedEndpoint;
+    private bool _runStoreFailed;
     private readonly List<double> _history = new();
     // Пауза перед первым join после старта/возобновления — только если игра уже
     // запущена: presence-кэш бэкенда протухает до ~20 с, и первый полл может не
@@ -83,6 +88,50 @@ internal sealed class SeedController
     {
         _api = api;
         _settings = settings;
+    }
+
+    public void PrepareForRestart()
+    {
+        if (IsRunning) PersistRunState(required: true);
+    }
+
+    private void PersistRunState(bool required = false)
+    {
+        lock (_runStoreGate)
+        {
+            if (!IsRunning) return;
+            try
+            {
+                _runStore.Save(new SeedRunSnapshot
+                {
+                    BootId = _bootId,
+                    Guest = _guestMode,
+                    Scheduled = _scheduledMode,
+                    WasOnTarget = _wasOnTarget,
+                    GameStartedAtUtc = GameProcessService.GetStartupState().StartedAtUtc,
+                    LastJoinKey = _lastJoinKey,
+                    LastJoinUtc = _lastJoinUtc,
+                    ExpectedEndpoint = _expectedEndpoint,
+                });
+                _runStoreFailed = false;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (required) throw new InvalidOperationException("Не удалось сохранить активный набор перед обновлением.", ex);
+                if (!_runStoreFailed) LogService.Warn("Состояние набора не сохранено: " + ex.Message);
+                _runStoreFailed = true;
+            }
+        }
+    }
+
+    private void ClearRunState()
+    {
+        lock (_runStoreGate)
+        {
+            try { _runStore.Clear(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { LogService.Warn("Не удалось удалить состояние набора: " + ex.Message); }
+        }
     }
 
     // Накопитель минут между серверными сессиями: сервер закрывает сессию и
@@ -188,6 +237,7 @@ internal sealed class SeedController
                 State.StatusText = $"Набор начнётся {DescribeOpening(ex.OpensAt)} — жду открытия…";
                 StateChanged?.Invoke();
                 LogService.Info($"Окно набора закрыто — жду открытия ({DescribeOpening(ex.OpensAt)}).");
+                PersistRunState();
                 _ = Task.Run(() => WaitForWindowAsync(loopToken));
                 return;
             }
@@ -199,6 +249,7 @@ internal sealed class SeedController
                 State.StatusText = "Сервис временно недоступен — жду восстановления и повторяю запуск…";
                 StateChanged?.Invoke();
                 LogService.Warn($"Запуск набора отложен: {ex.Message}");
+                PersistRunState();
                 _ = Task.Run(() => WaitForWindowAsync(loopToken));
                 return;
             }
@@ -212,6 +263,7 @@ internal sealed class SeedController
 
             State.Phase = SeedPhase.Connecting;
             State.StatusText = "Набор включён. Опрашиваю сервер…";
+            PersistRunState();
             StateChanged?.Invoke();
 
             _ = Task.Run(() => RunLoopAsync(loopToken));
@@ -307,6 +359,28 @@ internal sealed class SeedController
                 return;
             }
 
+            var game = GameProcessService.GetStartupState();
+            var saved = _runStore.Load(_bootId, game.StartedAtUtc);
+            if (saved is not null)
+            {
+                _guestMode = saved.Guest || _api.Token is null;
+                _scheduledMode = saved.Scheduled;
+                _wasOnTarget = saved.WasOnTarget;
+                _lastJoinKey = saved.LastJoinKey;
+                _lastJoinUtc = saved.LastJoinUtc;
+                _expectedEndpoint = saved.ExpectedEndpoint;
+                _loop = new CancellationTokenSource();
+                if (_scheduledMode) _systemAwake ??= PowerService.KeepSystemAwake("продолжение набора по расписанию");
+                LoadCarry();
+                State.Phase = SeedPhase.Connecting;
+                State.StatusText = "Продолжаю сохранённый набор…";
+                StateChanged?.Invoke();
+                LogService.Info("Восстановлен активный набор после перезапуска приложения.");
+                var restoredToken = _loop.Token;
+                _ = Task.Run(() => RunLoopAsync(restoredToken));
+                return;
+            }
+            if (_api.Token is null || !game.Running) return;
             AutoseedMyResponse? my;
             try { my = await _api.GetMyAsync(ct); }
             catch (ApiException ex) when (ex.IsAuthError)
@@ -346,6 +420,7 @@ internal sealed class SeedController
         try
         {
             StopLoop();
+            ClearRunState();
             var s = _settings();
 
             try { if (!_guestMode && _api.Token is not null) await _api.StopSeedAsync(CancellationToken.None); }
@@ -390,6 +465,7 @@ internal sealed class SeedController
             _api.Token = null;
             State.Session = null;
             ResetSessionCarry();
+            if (IsRunning) PersistRunState();
         }
         finally { _startGate.Release(); }
     }
@@ -441,8 +517,14 @@ internal sealed class SeedController
         State.Session = null;
         ResetSessionCarry();
         LogService.Warn("Авторизация недоступна — продолжаю набор по публичному статусу, без личных бонусов.");
+        if (IsRunning) PersistRunState();
         AuthExpired?.Invoke();
     }
+
+    private bool IsLocallyOnTarget(string? targetKey, GameStartupGate startup) =>
+        targetKey is not null && targetKey == _lastJoinKey && _expectedEndpoint is not null &&
+        startup.ConnectedEndpoint == _expectedEndpoint && _lastJoinUtc is { } joined &&
+        startup.LastServerJoinUtc is { } confirmed && confirmed >= joined;
 
     private async Task<AutoseedMyResponse> GetGuestStateAsync(GameStartupGate startup, CancellationToken ct)
     {
@@ -456,8 +538,7 @@ internal sealed class SeedController
             Target = status.Target,
             AllSeeded = status.AllSeeded,
             Window = status.Window,
-            OnTarget = status.Target?.Key == _lastJoinKey && _lastJoinUtc is { } joined &&
-                startup.LastServerJoinUtc is { } confirmed && confirmed >= joined,
+            OnTarget = IsLocallyOnTarget(status.Target?.Key, startup),
         };
     }
 
@@ -473,9 +554,17 @@ internal sealed class SeedController
             {
                 var gameState = GameProcessService.GetStartupState();
                 startup.CanJoin(gameState.StartedAtUtc);
+                if (startup.HasUnreadData)
+                {
+                    State.StatusText = "Проверяю текущее состояние Squad по журналу…";
+                    StateChanged?.Invoke();
+                    await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                    continue;
+                }
                 var my = _guestMode
                     ? await GetGuestStateAsync(startup, ct)
                     : await _api.GetMyAsync(ct);
+                ct.ThrowIfCancellationRequested();
                 if (my is null)
                 {
                     LogService.Warn("Пустой ответ /api/seed/my.");
@@ -501,10 +590,13 @@ internal sealed class SeedController
                     string? startupStatus = null;
                     var game = GameProcessService.GetStartupState();
                     var canJoin = startup.CanJoin(game.StartedAtUtc);
+                    if (IsLocallyOnTarget(my.Target?.Key, startup)) my.OnTarget = true;
+                    var connectionPending = startup.ConnectionPendingUtc is not null;
+                    if (connectionPending && State.Target is not null) my.Target = State.Target;
                     // Presence can lag behind an exited process. Do not let it block recovery.
                     if (!game.Running) my.OnTarget = false;
                     var restartReason = recovery.GetRestartReason(game.Running, game.Responding,
-                        canJoin, my.OnTarget, game.StartedAtUtc, DateTime.UtcNow, startup.HasFatalError,
+                        canJoin, my.OnTarget || connectionPending, game.StartedAtUtc, DateTime.UtcNow, startup.HasFatalError,
                         startup.OnlineDisconnectedSinceUtc);
                     if (restartReason is not null && my.Target is not null)
                     {
@@ -529,7 +621,7 @@ internal sealed class SeedController
                         continue;
                     }
                     if (DateTime.UtcNow >= _noJoinUntilUtc &&
-                        SeedDecisions.ShouldAttemptJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow))
+                        SeedDecisions.ShouldAttemptJoin(my, _lastJoinKey, _lastJoinUtc, DateTime.UtcNow, connectionPending))
                     {
                         ct.ThrowIfCancellationRequested();
                         if (startup.ShouldStart(game.Running, DateTime.UtcNow))
@@ -550,10 +642,23 @@ internal sealed class SeedController
                         else
                         {
                             var joinUrl = my.JoinUrl;
-                            if (!SteamJoinUrl.IsSafe(joinUrl) && !string.IsNullOrWhiteSpace(my.Target!.Name))
+                            if ((!SteamJoinUrl.IsSafe(joinUrl) || _expectedEndpoint is null || _lastJoinKey != my.Target?.Key) &&
+                                !string.IsNullOrWhiteSpace(my.Target!.Name))
+                            {
                                 joinUrl = await _api.GetJoinUrlAsync(my.Target.Name, ct);
+                                _expectedEndpoint = _api.GetServerEndpoint(my.Target.Name);
+                            }
                             ct.ThrowIfCancellationRequested();
-                            if (!SteamJoinUrl.IsSafe(joinUrl))
+                            if (_guestMode && _lastJoinKey == my.Target?.Key &&
+                                startup.ConnectedEndpoint is not null && _expectedEndpoint is null)
+                            {
+                                startupStatus = "Игра подключена — ожидаю адрес цели для проверки сервера.";
+                            }
+                            else if (IsLocallyOnTarget(my.Target?.Key, startup))
+                            {
+                                my.OnTarget = true;
+                            }
+                            else if (!SteamJoinUrl.IsSafe(joinUrl))
                             {
                                 startupStatus = $"Ссылка подключения к {my.Target!.Key} пока недоступна. Повтор запроса через 30 секунд.";
                             }
@@ -567,14 +672,23 @@ internal sealed class SeedController
                         }
                     }
 
-                    UpdateState(my);
-                    if (startupStatus is not null)
+                    await _startGate.WaitAsync(ct);
+                    try
                     {
-                        State.StatusText = startupStatus;
-                        StateChanged?.Invoke();
-                        if (startupStatus != lastStartupStatus) LogService.Info(startupStatus);
+                        ct.ThrowIfCancellationRequested();
+                        if (connectionPending)
+                            startupStatus = "Очередь или загрузка сервера — жду входа, повторное подключение приостановлено.";
+                        UpdateState(my);
+                        PersistRunState();
+                        if (startupStatus is not null)
+                        {
+                            State.StatusText = startupStatus;
+                            StateChanged?.Invoke();
+                            if (startupStatus != lastStartupStatus) LogService.Info(startupStatus);
+                        }
+                        lastStartupStatus = startupStatus;
                     }
-                    lastStartupStatus = startupStatus;
+                    finally { _startGate.Release(); }
                 }
             }
             catch (SeedWindowClosedException ex)
@@ -678,7 +792,7 @@ internal sealed class SeedController
             State.PlayersHistory = _history.ToArray();
         }
 
-        if (my.OnTarget && (_guestMode || my.Session is not null))
+        if (my.OnTarget)
         {
             _wasOnTarget = true;
             State.Phase = SeedPhase.OnTarget;
@@ -728,6 +842,7 @@ internal sealed class SeedController
         var s = _settings();
 
         StopLoop();
+        ClearRunState();
         ResetSessionCarry(); // сид завершён — следующий запуск начнёт счёт с нуля
 
         // Выключаем режим на сервере: иначе enabled=true переживает завершение,

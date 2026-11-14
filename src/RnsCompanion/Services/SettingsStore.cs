@@ -22,13 +22,15 @@ internal sealed class SettingsStore
         catch (UnauthorizedAccessException) { return new AppSettings(); }
     }
 
-    public void Save(AppSettings settings)
+    public bool Save(AppSettings settings)
     {
         try
         {
             AtomicFile.WriteAllText(_path, JsonSerializer.Serialize(settings, JsonOpts));
+            return true;
         }
         catch (IOException ex) { LogService.Warn($"Не удалось сохранить настройки: {ex.Message}"); }
         catch (UnauthorizedAccessException ex) { LogService.Warn($"Не удалось сохранить настройки: {ex.Message}"); }
+        return false;
     }
 }

@@ -74,8 +74,10 @@ internal static class SchedulerService
     /// </summary>
     public static void Register(IReadOnlyCollection<DayOfWeek> days, TimeSpan time, bool wakeToRun)
     {
-        if (days.Count == 0)
-            throw new InvalidOperationException("Не выбран ни один день недели.");
+        if (days.Count == 0 || days.Any(day => !Enum.IsDefined(day)))
+            throw new InvalidOperationException("Выберите корректные дни недели.");
+        if (time < TimeSpan.Zero || time >= TimeSpan.FromDays(1) || time.Ticks % TimeSpan.TicksPerMinute != 0)
+            throw new InvalidOperationException("Время запуска должно быть от 00:00 до 23:59.");
 
         var exePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("Не удалось определить путь приложения.");
