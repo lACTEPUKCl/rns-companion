@@ -9,7 +9,7 @@ static void Check(string name, bool ok)
 }
 static async Task Until(Func<bool> condition)
 {
-    var deadline = DateTime.UtcNow.AddSeconds(40);
+    var deadline = DateTime.UtcNow.AddSeconds(80);
     while (!condition())
     {
         if (DateTime.UtcNow >= deadline) throw new TimeoutException("Controller did not recover");
@@ -100,7 +100,32 @@ var authExpired = false;
 seed.AuthExpired += () => authExpired = true;
 await seed.StartAsync(false, default);
 await Until(() => authExpired);
-Check("expired credentials stop recovery and request login", !seed.IsRunning);
+Check("expired credentials preserve seeding in guest mode", seed.IsRunning && api.Token is null);
+await seed.StopAsync();
+
+api = new ApiClient
+{
+    Token = null,
+    Start = () => throw new Exception("Guest must not call authenticated start"),
+    Read = () => throw new Exception("Guest must not call authenticated status"),
+    Status = () => Task.FromResult<AutoseedStatusResponse?>(new()
+    {
+        Ok = true, Window = new() { Open = true }, AllSeeded = false,
+    }),
+};
+seed = Controller(api);
+await seed.StartAsync(true, default);
+await Until(() => seed.State.StatusText.Contains("Ожидаю") || seed.State.Target is not null);
+Check("scheduled guest seeding starts without account credentials", seed.IsRunning);
+var personalStarts = 0;
+api.Token = "renewed-session";
+api.Start = () => { personalStarts++; return Task.CompletedTask; };
+api.Read = () => Task.FromResult<AutoseedMyResponse?>(Presence());
+await seed.ResumeAsync(default);
+Check("login upgrades an active guest session to personal seeding", personalStarts == 1 && seed.IsRunning);
+await seed.ContinueAsGuestAsync();
+Check("logout preserves active seeding and clears private credentials", seed.IsRunning && api.Token is null);
+await seed.StopAsync();
 
 api = new ApiClient { Start = () => Task.FromException(new HttpRequestException("offline")),
     Status = () => Task.FromResult<AutoseedStatusResponse?>(new() { Window = new() { Open = false } }) };

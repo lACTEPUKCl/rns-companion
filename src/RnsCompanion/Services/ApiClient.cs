@@ -50,11 +50,14 @@ internal sealed class ApiClient : IDisposable
         }
     }
 
-    public ApiClient()
+    public ApiClient(HttpMessageHandler? transport = null)
     {
-        var handler = new HttpClientHandler
+        var handler = transport ?? new SocketsHttpHandler
         {
             CookieContainer = _cookies,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         };
         _http = new HttpClient(handler)
@@ -216,28 +219,56 @@ internal sealed class ApiClient : IDisposable
             ?? throw new ApiException(resp.StatusCode, "Сервер не вернул CSRF-токен.");
     }
 
-    private Task<HttpResponseMessage> SendAsync(
+    private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method, string path, HttpContent? content, bool csrf, CancellationToken ct,
         bool bypassCache = false)
     {
-        var req = new HttpRequestMessage(method, _baseUrl + path);
-        if (bypassCache)
+        // Only reads may be retried. A lost POST response can already represent
+        // a completed purchase or account operation on the server.
+        var attempts = method == HttpMethod.Get ? 3 : 1;
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
-            req.Headers.CacheControl = new CacheControlHeaderValue
+            using var req = new HttpRequestMessage(method, _baseUrl + path);
+            if (bypassCache)
             {
-                NoCache = true,
-                NoStore = true,
-                MaxAge = TimeSpan.Zero,
-            };
-            req.Headers.Pragma.ParseAdd("no-cache");
-        }
-        if (Token is { } token)
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        if (csrf && _csrfToken is not null)
-            req.Headers.TryAddWithoutValidation("X-CSRF-Token", _csrfToken);
-        if (content is not null)
+                req.Headers.CacheControl = new CacheControlHeaderValue
+                {
+                    NoCache = true, NoStore = true, MaxAge = TimeSpan.Zero,
+                };
+                req.Headers.Pragma.ParseAdd("no-cache");
+            }
+            if (Token is { } token)
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            if (csrf && _csrfToken is not null)
+                req.Headers.TryAddWithoutValidation("X-CSRF-Token", _csrfToken);
             req.Content = content;
-        return _http.SendAsync(req, ct);
+            try
+            {
+                var response = await _http.SendAsync(req, ct);
+                if (method == HttpMethod.Get && attempt + 1 < attempts &&
+                    (response.StatusCode == HttpStatusCode.BadGateway ||
+                     response.StatusCode == HttpStatusCode.ServiceUnavailable ||
+                     response.StatusCode == HttpStatusCode.GatewayTimeout))
+                {
+                    response.Dispose();
+                    await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)), ct);
+                    continue;
+                }
+                return response;
+            }
+            catch (HttpRequestException ex)
+            {
+                if (attempt + 1 >= attempts)
+                    throw new HttpRequestException(ex.HttpRequestError,
+                        $"Ошибка сети ({ex.HttpRequestError}): {ex.GetBaseException().Message}", ex, ex.StatusCode);
+                await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)), ct);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attempt + 1 < attempts)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)), ct);
+            }
+        }
+        throw new HttpRequestException("Не удалось получить ответ после повторных попыток.");
     }
 
     private static async Task<T?> ReadJsonAsync<T>(HttpResponseMessage resp, CancellationToken ct)

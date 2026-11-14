@@ -157,5 +157,44 @@ Check("previous process offline state cannot restart new process", recovery.GetR
 recovery.RecordRestart(now.AddMinutes(6));
 Check("online outage obeys restart cooldown", recovery.GetRestartReason(true, true, true, false, now.AddMinutes(5), now.AddMinutes(8), onlineDisconnectedSinceUtc: now.AddMinutes(5)) is null);
 
+var serverLogPath = Path.GetTempFileName();
+try
+{
+    var serverStart = now.AddMinutes(-2);
+    var stamp = now.ToString("yyyy.MM.dd-HH.mm.ss:fff", System.Globalization.CultureInfo.InvariantCulture);
+    var serverLog = new SquadStartupLog(serverLogPath);
+    File.WriteAllText(serverLogPath, $"[{stamp}][  0]LogNet: Browse: 127.0.0.1:7787/Game/Maps/EntryMap\n");
+    serverLog.IsReady(serverStart);
+    Check("connection attempt is not server entry", serverLog.LastServerJoinUtc is null);
+    File.AppendAllText(serverLogPath,
+        $"[{stamp}][  0]LogNet: Welcomed by server (Level: /Game/Maps/Sumari/Gameplay_Layers/Sumari_Seed_v1)\n");
+    serverLog.IsReady(serverStart);
+    Check("welcome waits for map loading", serverLog.LastServerJoinUtc is null);
+    File.AppendAllText(serverLogPath,
+        $"[{stamp}][  0]LogLoad: Took 2.310640 seconds to LoadMap(/Game/Maps/Sumari/Gameplay_Layers/Sumari_Seed_v1)\n");
+    serverLog.IsReady(serverStart);
+    Check("actual Squad welcome and loaded map confirm guest entry", serverLog.LastServerJoinUtc is not null);
+    File.AppendAllText(serverLogPath, $"[{stamp}][  0]LogNet: Network Failure: ConnectionLost\n");
+    serverLog.IsReady(serverStart);
+    Check("network failure clears guest server confirmation", serverLog.LastServerJoinUtc is null);
+    File.AppendAllText(serverLogPath,
+        $"[{stamp}][  0]LogLoad: Took 1.0 seconds to LoadMap(/Game/Maps/Sumari/Gameplay_Layers/Sumari_Seed_v1)\n");
+    serverLog.IsReady(serverStart);
+    Check("map alone cannot confirm a remote server", serverLog.LastServerJoinUtc is null);
+}
+finally { File.Delete(serverLogPath); }
+
+var schedule = new AppSettings { ScheduleEnabled = true, ScheduleTime = "09:00" };
+var morning = new DateTime(2026, 11, 14, 9, 1, 0);
+Check("schedule accepts timely wake", ScheduleLaunchPolicy.IsDue(schedule, morning));
+Check("boot hours after missed task does not start game", !ScheduleLaunchPolicy.IsDue(schedule, morning.AddHours(3)));
+Check("early command cannot start seeding", !ScheduleLaunchPolicy.IsDue(schedule, morning.AddMinutes(-2)));
+schedule.ScheduleEnabled = false;
+Check("disabled schedule rejects queued command", !ScheduleLaunchPolicy.IsDue(schedule, morning));
+schedule.ScheduleEnabled = true;
+schedule.ScheduleEveryDay = false;
+schedule.ScheduleDays = new() { (int)DayOfWeek.Monday };
+Check("wrong weekday rejects scheduled command", !ScheduleLaunchPolicy.IsDue(schedule, morning));
+
 Console.WriteLine(failed == 0 ? "ALL TESTS PASSED" : $"FAILURES: {failed}");
 return failed == 0 ? 0 : 1;

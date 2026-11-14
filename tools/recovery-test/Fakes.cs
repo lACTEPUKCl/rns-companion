@@ -6,10 +6,11 @@ namespace RnsCompanion.Services;
 // External boundaries only: the production SeedController loop runs unchanged.
 internal sealed class ApiClient
 {
+    public string? Token { get; set; } = "test-token";
     public Func<Task<AutoseedMyResponse?>> Read = () => Task.FromResult<AutoseedMyResponse?>(null);
     public Func<Task> Start = () => Task.CompletedTask;
     public Func<Task<AutoseedStatusResponse?>> Status = () => Task.FromResult<AutoseedStatusResponse?>(
-        new() { Window = new() { Open = true } });
+        new() { Ok = true, Window = new() { Open = true } });
     public Task<AutoseedMyResponse?> GetMyAsync(CancellationToken ct) => Read();
     public Task StartSeedAsync(CancellationToken ct) => Start();
     public Task StopSeedAsync(CancellationToken ct) => Task.CompletedTask;
@@ -21,7 +22,7 @@ internal sealed class ApiException(HttpStatusCode status, string message) : Exce
     public HttpStatusCode StatusCode => status;
     public bool IsAuthError => status == HttpStatusCode.Unauthorized;
 }
-internal sealed class SeedWindowClosedException : Exception { public DateTime? OpensAt => null; }
+internal sealed class SeedWindowClosedException(DateTime? opensAt = null) : Exception { public DateTime? OpensAt => opensAt; }
 internal static class GameProcessService
 {
     public const int SquadAppId = 393380;
@@ -42,6 +43,7 @@ internal static class GameProcessService
 internal sealed class GameStartupGate
 {
     public static bool Fatal;
+    public DateTime? LastServerJoinUtc => null;
     public bool HasFatalError => Fatal;
     public static DateTime? OfflineSince;
     public DateTime? OnlineDisconnectedSinceUtc => OfflineSince;

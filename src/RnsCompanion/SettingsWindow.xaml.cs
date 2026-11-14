@@ -20,6 +20,7 @@ public partial class SettingsWindow : Window
     private readonly string _baseUrl;
     private readonly (CheckBox Box, DayOfWeek Day)[] _dayBoxes;
     private readonly DispatcherTimer _scheduleTimer;
+    private bool _closingAfterSchedule;
     private bool _busy;          // удаление расписания
     private bool _scheduleBusy;  // фоновая регистрация задачи
     private bool _schedulePending;
@@ -68,6 +69,7 @@ public partial class SettingsWindow : Window
         };
         BtnClose.Click += (_, _) => Close();
         BtnDeleteSchedule.Click += (_, _) => DeleteSchedule();
+        BtnRepairSchedule.Click += async (_, _) => await ApplyScheduleTaskAsync();
 
         // Автосохранение подключаем ПОСЛЕ инициализации контролов,
         // чтобы стартовые IsChecked не триггерили лишние записи.
@@ -86,7 +88,7 @@ public partial class SettingsWindow : Window
         _scheduleTimer.Tick += (_, _) =>
         {
             _scheduleTimer.Stop();
-            ApplyScheduleTask();
+            _ = ApplyScheduleTaskAsync();
         };
 
         ChkScheduleEnabled.Checked += (_, _) => OnScheduleChanged();
@@ -104,6 +106,18 @@ public partial class SettingsWindow : Window
 
         RefreshScheduleUi();
         LoadTaskSummaryAsync();
+        Closing += async (_, e) =>
+        {
+            if (_closingAfterSchedule || (!_scheduleTimer.IsEnabled && !_scheduleBusy)) return;
+            e.Cancel = true;
+            _scheduleTimer.Stop();
+            while (_scheduleBusy) await Task.Delay(50);
+            _schedulePending = false;
+            _scheduleTimer.Stop();
+            await ApplyScheduleTaskAsync();
+            _closingAfterSchedule = true;
+            Close();
+        };
     }
 
     // ─────────────────────────── Автосохранение ───────────────────────────
@@ -161,7 +175,7 @@ public partial class SettingsWindow : Window
 
     // ─────────────────── Планировщик (фон, с дебаунсом) ───────────────────
 
-    private async void ApplyScheduleTask()
+    private async Task ApplyScheduleTaskAsync()
     {
         if (_scheduleBusy)
         {
@@ -195,7 +209,7 @@ public partial class SettingsWindow : Window
 
                 // Страховка восстановления конфига при входе в систему — с первым
                 // включением low-graphics (и обновляем путь к exe при каждом применении).
-                if (s.LowGraphicsDuringSeed)
+                if (s.ScheduleEnabled || s.LowGraphicsDuringSeed)
                     SchedulerService.RegisterRestoreGuard();
             });
         }
@@ -210,7 +224,7 @@ public partial class SettingsWindow : Window
             LogService.Error("Планировщик: не удалось применить задачу: " + error);
             TxtScheduleState.Text = "Не удалось применить задачу: " + error;
         }
-        LoadTaskSummaryAsync();
+        if (error is null) LoadTaskSummaryAsync();
         if (_schedulePending)
         {
             _schedulePending = false;
@@ -246,6 +260,7 @@ public partial class SettingsWindow : Window
     {
         var enabled = ChkScheduleEnabled.IsChecked == true;
         ScheduleBody.IsEnabled = enabled;
+        BtnRepairSchedule.IsEnabled = enabled && !_scheduleBusy;
         ScheduleBody.Opacity = enabled ? 1.0 : 0.45;
         DaysPanel.IsEnabled = RbCustomDays.IsChecked == true;
 
@@ -290,6 +305,11 @@ public partial class SettingsWindow : Window
     {
         if (_busy) return;
         _busy = true;
+        ChkScheduleEnabled.IsChecked = false;
+        _scheduleTimer.Stop();
+        while (_scheduleBusy) await Task.Delay(50);
+        _schedulePending = false;
+        _scheduleTimer.Stop();
         BtnDeleteSchedule.IsEnabled = false;
         string? error = null;
         try

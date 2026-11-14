@@ -19,6 +19,9 @@ internal sealed class SquadStartupLog
     public bool HasFatalError { get; private set; }
     private DateTime? _onlineDisconnectedSinceUtc;
     private bool _caughtUp;
+    private DateTime? _lastServerJoinUtc;
+    private bool _serverWelcomed;
+    public DateTime? LastServerJoinUtc => _caughtUp ? _lastServerJoinUtc : null;
     // Do not act on an old disconnect while its recovery may still be unread.
     public DateTime? OnlineDisconnectedSinceUtc => _caughtUp ? _onlineDisconnectedSinceUtc : null;
 
@@ -60,6 +63,25 @@ internal sealed class SquadStartupLog
                     (line.Contains("Fatal error:", StringComparison.OrdinalIgnoreCase) ||
                      line.Contains("Unhandled Exception:", StringComparison.OrdinalIgnoreCase)))
                     HasFatalError = true;
+                if (IsCurrentLine(line, processStartUtc.Value))
+                {
+                    if (line.Contains("LogNet: Browse:", StringComparison.Ordinal) ||
+                        line.Contains("LogNet: Network Failure", StringComparison.Ordinal) ||
+                        line.Contains("LogNet: Connection lost", StringComparison.Ordinal))
+                    {
+                        _lastServerJoinUtc = null;
+                        _serverWelcomed = false;
+                    }
+                    if (line.Contains("LogNet: Welcomed by server (Level:", StringComparison.Ordinal))
+                        _serverWelcomed = true;
+                    if (line.Contains("LogNet: Join succeeded:", StringComparison.Ordinal) ||
+                        (_serverWelcomed && line.Contains("LogLoad: Took ", StringComparison.Ordinal) &&
+                         line.Contains(" seconds to LoadMap(", StringComparison.Ordinal) &&
+                         !line.Contains("/Game/Maps/EntryMap)", StringComparison.Ordinal)))
+                        _lastServerJoinUtc = DateTime.ParseExact(line.Substring(1, 23),
+                            "yyyy.MM.dd-HH.mm.ss:fff", CultureInfo.InvariantCulture,
+                            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+                }
                 const string connectionMarker = "LogOnlineGame: Warning: USQGameInstance::HandleNetworkConnectionStatusChanged: ";
                 if (IsCurrentLine(line, processStartUtc.Value) && line.Contains(connectionMarker, StringComparison.Ordinal))
                 {
@@ -89,6 +111,8 @@ internal sealed class SquadStartupLog
         HasFatalError = false;
         _onlineDisconnectedSinceUtc = null;
         _caughtUp = false;
+        _lastServerJoinUtc = null;
+        _serverWelcomed = false;
         _fileCreated = default;
     }
 

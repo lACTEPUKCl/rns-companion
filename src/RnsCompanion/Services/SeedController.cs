@@ -56,6 +56,7 @@ internal sealed class SeedController
     // при протухшем enabled=true на сервере уводило бы ПК в сон на ровном месте.
     private bool _wasOnTarget;
     private bool _scheduledMode;
+    private bool _guestMode;
     private readonly List<double> _history = new();
     // Пауза перед первым join после старта/возобновления — только если игра уже
     // запущена: presence-кэш бэкенда протухает до ~20 с, и первый полл может не
@@ -163,6 +164,7 @@ internal sealed class SeedController
             var loopToken = loop.Token;
             _loop = loop;
             _scheduledMode = scheduled;
+            _guestMode = string.IsNullOrWhiteSpace(_api.Token);
             if (scheduled)
                 _systemAwake ??= PowerService.KeepSystemAwake("набор по расписанию");
             _targetWasSeen = false;
@@ -174,7 +176,11 @@ internal sealed class SeedController
 
             try
             {
-                await _api.StartSeedAsync(loop.Token); // ApiException — наружу, в UI
+                if (!_guestMode) await _api.StartSeedAsync(loop.Token);
+            }
+            catch (ApiException ex) when (ex.IsAuthError)
+            {
+                EnterGuestMode();
             }
             catch (SeedWindowClosedException ex)
             {
@@ -228,7 +234,7 @@ internal sealed class SeedController
                 var status = await _api.GetStatusAsync(ct);
                 if (status?.Window is { Open: true })
                 {
-                    try { await _api.StartSeedAsync(ct); }
+                    try { if (!_guestMode) await _api.StartSeedAsync(ct); }
                     catch (SeedWindowClosedException) { goto wait; } // окно ещё не открылось
 
                     LogService.Info("Окно набора открылось — режим включён.");
@@ -259,13 +265,8 @@ internal sealed class SeedController
             }
             catch (ApiException ex) when (ex.IsAuthError)
             {
-                LogService.Warn("Сервер больше не принимает токен — требуется повторный вход.");
-                StopLoop();
-                State.Phase = SeedPhase.Idle;
-                State.StatusText = "Сессия истекла — войдите заново";
-                StateChanged?.Invoke();
-                AuthExpired?.Invoke();
-                return;
+                EnterGuestMode();
+                continue;
             }
             catch (Exception ex) when (ex is ApiException or HttpRequestException)
             {
@@ -295,7 +296,16 @@ internal sealed class SeedController
         await _startGate.WaitAsync(ct);
         try
         {
-            if (IsRunning) return;
+            if (IsRunning)
+            {
+                if (_guestMode && _api.Token is not null)
+                {
+                    await _api.StartSeedAsync(ct);
+                    _guestMode = false;
+                    LogService.Info("Вход выполнен — включено личное участие в наборе.");
+                }
+                return;
+            }
 
             AutoseedMyResponse? my;
             try { my = await _api.GetMyAsync(ct); }
@@ -338,7 +348,7 @@ internal sealed class SeedController
             StopLoop();
             var s = _settings();
 
-            try { await _api.StopSeedAsync(CancellationToken.None); }
+            try { if (!_guestMode && _api.Token is not null) await _api.StopSeedAsync(CancellationToken.None); }
             catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
             {
                 LogService.Warn($"POST stop не прошёл ({ex.Message}) — локально режим уже выключен.");
@@ -363,6 +373,25 @@ internal sealed class SeedController
         {
             _startGate.Release();
         }
+    }
+
+    public async Task ContinueAsGuestAsync()
+    {
+        await _startGate.WaitAsync();
+        try
+        {
+            if (!_guestMode && _api.Token is not null)
+            {
+                try { await _api.StopSeedAsync(CancellationToken.None); }
+                catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
+                { LogService.Warn("Отключение личного участия: " + ex.Message); }
+            }
+            _guestMode = true;
+            _api.Token = null;
+            State.Session = null;
+            ResetSessionCarry();
+        }
+        finally { _startGate.Release(); }
     }
 
     /// <summary>Локальная остановка без запросов к серверу (выход из приложения).</summary>
@@ -405,6 +434,33 @@ internal sealed class SeedController
         catch (Exception ex) { LogService.Error("Не удалось применить low-пресет — набор продолжается без него", ex); }
     }
 
+    private void EnterGuestMode()
+    {
+        _guestMode = true;
+        _api.Token = null;
+        State.Session = null;
+        ResetSessionCarry();
+        LogService.Warn("Авторизация недоступна — продолжаю набор по публичному статусу, без личных бонусов.");
+        AuthExpired?.Invoke();
+    }
+
+    private async Task<AutoseedMyResponse> GetGuestStateAsync(GameStartupGate startup, CancellationToken ct)
+    {
+        var status = await _api.GetStatusAsync(ct);
+        if (status?.Ok != true) throw new HttpRequestException("Публичный статус вернул некорректный ответ.");
+        if (status.Window is { Open: false }) throw new SeedWindowClosedException(status.Window.OpensAt);
+        return new AutoseedMyResponse
+        {
+            Ok = true,
+            Enabled = true,
+            Target = status.Target,
+            AllSeeded = status.AllSeeded,
+            Window = status.Window,
+            OnTarget = status.Target?.Key == _lastJoinKey && _lastJoinUtc is { } joined &&
+                startup.LastServerJoinUtc is { } confirmed && confirmed >= joined,
+        };
+    }
+
     private async Task RunLoopAsync(CancellationToken ct)
     {
         var startup = new GameStartupGate();
@@ -415,7 +471,11 @@ internal sealed class SeedController
         {
             try
             {
-                var my = await _api.GetMyAsync(ct);
+                var gameState = GameProcessService.GetStartupState();
+                startup.CanJoin(gameState.StartedAtUtc);
+                var my = _guestMode
+                    ? await GetGuestStateAsync(startup, ct)
+                    : await _api.GetMyAsync(ct);
                 if (my is null)
                 {
                     LogService.Warn("Пустой ответ /api/seed/my.");
@@ -517,6 +577,11 @@ internal sealed class SeedController
                     lastStartupStatus = startupStatus;
                 }
             }
+            catch (SeedWindowClosedException ex)
+            {
+                State.StatusText = $"Набор начнётся {DescribeOpening(ex.OpensAt)} — жду открытия…";
+                StateChanged?.Invoke();
+            }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 return;
@@ -530,14 +595,8 @@ internal sealed class SeedController
             }
             catch (ApiException ex) when (ex.IsAuthError)
             {
-                LogService.Warn("Сервер больше не принимает токен — требуется повторный вход.");
-                StopLoop();
-                // Подмена конфига не откатывается здесь — её снимет exit-watcher/watchdog.
-                State.Phase = SeedPhase.Idle;
-                State.StatusText = "Сессия истекла — войдите заново";
-                StateChanged?.Invoke();
-                AuthExpired?.Invoke();
-                return;
+                EnterGuestMode();
+                continue;
             }
             catch (Exception ex) when (ex is ApiException or HttpRequestException)
             {
@@ -619,11 +678,11 @@ internal sealed class SeedController
             State.PlayersHistory = _history.ToArray();
         }
 
-        if (my.OnTarget && my.Session is not null)
+        if (my.OnTarget && (_guestMode || my.Session is not null))
         {
             _wasOnTarget = true;
             State.Phase = SeedPhase.OnTarget;
-            State.StatusText = "Вы на целевом сервере"; // плашка справа уже говорит «ИДЁТ СИД»
+            State.StatusText = _guestMode ? "Вы на сервере — гостевой набор" : "Вы на целевом сервере"; // плашка справа уже говорит «ИДЁТ СИД»
         }
         else
         {
@@ -673,7 +732,7 @@ internal sealed class SeedController
 
         // Выключаем режим на сервере: иначе enabled=true переживает завершение,
         // и каждый запуск приложения «возобновляет» уже законченный набор.
-        try { await _api.StopSeedAsync(CancellationToken.None); }
+        try { if (!_guestMode && _api.Token is not null) await _api.StopSeedAsync(CancellationToken.None); }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {
             LogService.Warn($"POST stop при завершении не прошёл ({ex.Message}).");

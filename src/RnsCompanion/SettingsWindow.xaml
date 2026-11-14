@@ -100,14 +100,16 @@
                              Foreground="{StaticResource Text1}"/>
                 </Border>
 
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                  <Button x:Name="BtnDeleteSchedule" Content="Удалить расписание"
-                          Style="{StaticResource BtnDanger}" Padding="12,6"/>
-                  <TextBlock x:Name="TxtScheduleState" Style="{StaticResource HintText}"
-                             Foreground="{StaticResource Blue}" FontSize="11"
-                             VerticalAlignment="Center" Margin="12,0,0,0"
-                             TextWrapping="Wrap"/>
-                </StackPanel>
+                <StackPanel Margin="0,10,0,0">
+                    <WrapPanel>
+                      <Button x:Name="BtnRepairSchedule" Content="Восстановить задачу"
+                              Style="{StaticResource BtnGhost}" Padding="12,6" Margin="0,0,8,6"/>
+                      <Button x:Name="BtnDeleteSchedule" Content="Удалить расписание"
+                              Style="{StaticResource BtnDanger}" Padding="12,6" Margin="0,0,0,6"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="TxtScheduleState" Style="{StaticResource HintText}"
+                               Foreground="{StaticResource Blue}" FontSize="11" TextWrapping="Wrap"/>
+                  </StackPanel>
               </StackPanel>
             </StackPanel>
           </Border>

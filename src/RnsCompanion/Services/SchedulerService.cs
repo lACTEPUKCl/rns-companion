@@ -19,8 +19,6 @@ internal static class SchedulerService
     /// GameUserSettings.ini, если приложение было убито во время подмены.</summary>
     public const string RestoreGuardTaskName = "RNS Companion RestoreGuard";
 
-    private static readonly string[] DayCodes = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
-
     /// <summary>Дни недели → битовая маска (Вс=1, Пн=2, … Сб=64).</summary>
     public static int DaysOfWeekMask(IEnumerable<DayOfWeek> days) =>
         days.Distinct().Aggregate(0, (mask, d) => mask | (1 << (int)d));
@@ -84,34 +82,31 @@ internal static class SchedulerService
 
         var everyDay = DaysOfWeekMask(days) == 0x7F;
         var timeText = time.ToString(@"hh\:mm");
-        var scheduleArgs = everyDay
-            ? "/SC DAILY"
-            : "/SC WEEKLY /D " + string.Join(",", days.Distinct().OrderBy(d => d).Select(d => DayCodes[(int)d]));
-
-        var (exitCode, _, stderr) = Run("schtasks.exe",
-            $"/Create /F /TN \"{TaskName}\" {scheduleArgs} /ST {timeText} " +
-            $"/TR \"\\\"{exePath}\\\" /scheduled\"",
-            timeoutSec: 30);
-        if (exitCode != 0)
-            throw new InvalidOperationException($"schtasks /Create завершился с кодом {exitCode}: {stderr.Trim()}");
-
-        // WakeToRun и соседние настройки schtasks не умеет — докручиваем через PowerShell.
+        // A new scheduled process forwards /scheduled to the existing app.
+        // IgnoreNew would silently skip every later day while the app stays open.
+        var trigger = everyDay
+            ? "$tr = New-ScheduledTaskTrigger -Daily -At '" + timeText + "'; "
+            : "$tr = New-ScheduledTaskTrigger -Weekly -DaysOfWeek " +
+              string.Join(",", days.Distinct().Select(day => "'" + day + "'")) + " -At '" + timeText + "'; ";
+        var user = Environment.UserDomainName + "\\" + Environment.UserName;
         var ps =
-            "$t = Get-ScheduledTask -TaskName '" + TaskName + "' -ErrorAction Stop; " +
-            "$s = $t.Settings; " +
-            "$s.WakeToRun = $" + (wakeToRun ? "true" : "false") + "; " +
-            "$s.StartWhenAvailable = $true; " +
-            "$s.DisallowStartIfOnBatteries = $false; " +
-            "$s.StopIfGoingOnBatteries = $false; " +
-            "$s.MultipleInstances = 'IgnoreNew'; " +
-            "$s.RestartCount = 3; " +
-            "$s.RestartInterval = 'PT1M'; " +
-            "$s.ExecutionTimeLimit = 'PT0S'; " +
-            "Set-ScheduledTask -TaskName '" + TaskName + "' -Settings $s -ErrorAction Stop | Out-Null";
+            "$ErrorActionPreference = 'Stop'; " +
+            "$a = New-ScheduledTaskAction -Execute '" + PsQuote(exePath) + "' -Argument '/scheduled'; " +
+            trigger +
+            "$p = New-ScheduledTaskPrincipal -UserId '" + PsQuote(user) + "' -LogonType Interactive -RunLevel Limited; " +
+            "$s = New-ScheduledTaskSettingsSet -WakeToRun:$" + (wakeToRun ? "true" : "false") +
+            " -StartWhenAvailable:$false -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
+            "-MultipleInstances Parallel -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) " +
+            "-ExecutionTimeLimit ([TimeSpan]::Zero); " +
+            "Register-ScheduledTask -TaskName '" + TaskName + "' -Action $a -Trigger $tr " +
+            "-Principal $p -Settings $s -Force -ErrorAction Stop | Out-Null; " +
+            "$saved = Get-ScheduledTask -TaskName '" + TaskName + "' -ErrorAction Stop; " +
+            "if ($saved.Actions[0].Execute -ne '" + PsQuote(exePath) + "' -or " +
+            "$saved.Actions[0].Arguments -ne '/scheduled' -or $saved.Settings.WakeToRun -ne $" +
+            (wakeToRun ? "true" : "false") + ") { throw 'Task verification failed' }";
         var (psExit, _, psErr) = RunPowerShell(ps, timeoutSec: 60);
         if (psExit != 0)
-            throw new InvalidOperationException(
-                $"Задача создана, но WakeToRun и настройки восстановления запуска не применены: {psErr.Trim()}");
+            throw new InvalidOperationException("Не удалось сохранить и проверить задачу автосида: " + psErr.Trim());
 
         LogService.Info($"Планировщик: задача «{TaskName}» сохранена " +
                         $"({(everyDay ? "ежедневно" : "дни: " + string.Join(",", days))}, " +

@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private WinForms.NotifyIcon? _tray;
     private bool _reallyClose;
     private bool _seedStartInProgress;
+    private int _scheduledStartGeneration;
     private bool? _windowOpen; // из публичного статуса; null — бэкенд старый, не знаем
     private int _threshold; // порог заполнения сервера (из публичного статуса)
     // Последний публичный статус — источник карточки серверов (живёт всегда,
@@ -50,7 +51,9 @@ public partial class MainWindow : Window
         _seed.StateChanged += () => InvokeUi(RefreshSeedUi);
         _seed.AuthExpired += () => InvokeUi(() =>
         {
-            AppendJournal("Сессия истекла — войдите заново.");
+            AppendJournal(_seed.IsRunning
+                ? "Сессия истекла — набор продолжается в гостевом режиме. Для бонусов войдите снова."
+                : "Сессия истекла. Гостевой набор доступен без входа.");
             ClearAuth();
         });
 
@@ -118,7 +121,7 @@ public partial class MainWindow : Window
         NavJournal.Visibility = _settings.ShowJournal ? Visibility.Visible : Visibility.Collapsed;
 
         // Если набор был включён до перезапуска приложения — подхватываем его.
-        if (_api.Token is not null)
+        if (!scheduledLaunch && _api.Token is not null && GameProcessService.IsGameRunning())
             _ = _seed.ResumeAsync(CancellationToken.None);
 
         _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -127,8 +130,7 @@ public partial class MainWindow : Window
 
         _ = Task.Run(() => PublicStatusLoopAsync(_statusPoll.Token));
         _ = Task.Run(() => UpdateCheckLoopAsync(_statusPoll.Token));
-        if (!scheduledLaunch)
-            _ = RefreshScheduledTasksAfterUpdateAsync();
+        _ = MaintainScheduledTasksAsync(_statusPoll.Token);
 
         if (scheduledLaunch)
             HandleScheduledCommand();
@@ -141,10 +143,13 @@ public partial class MainWindow : Window
     public void HandleScheduledCommand()
     {
         LogService.Info("Запуск по расписанию: автоматически включаю набор…");
-        if (_api.Token is null)
-            AppendJournal("Нет сохранённой авторизации — войдите вручную, затем расписание будет работать.");
-        else
-            _ = StartSeedAsync(scheduled: true);
+        if (!ScheduleLaunchPolicy.IsDue(_settings, DateTime.Now))
+        {
+            AppendJournal("Пропущен устаревший или отключённый запуск по расписанию.");
+            return;
+        }
+        _scheduledStartGeneration++;
+        _ = StartSeedAsync(scheduled: true);
     }
 
     /// <summary>После обновления переносит новые надёжные настройки в уже
@@ -168,13 +173,32 @@ public partial class MainWindow : Window
                         SchedulerService.Register(days, settings.ScheduleTimeOfDay,
                             settings.ScheduleWakeToRun);
                 }
-                if (settings.LowGraphicsDuringSeed)
+                if (settings.ScheduleEnabled || settings.LowGraphicsDuringSeed)
                     SchedulerService.RegisterRestoreGuard();
             });
         }
         catch (Exception ex)
         {
             LogService.Warn($"Не удалось обновить существующие задачи планировщика: {ex.GetBaseException().Message}");
+        }
+    }
+
+    private async Task MaintainScheduledTasksAsync(CancellationToken ct)
+    {
+        await RefreshScheduledTasksAfterUpdateAsync();
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(5), ct);
+                if (_settings.ScheduleEnabled && !await Task.Run(SchedulerService.TaskExists, ct))
+                {
+                    LogService.Warn("Задача автосида отсутствует — восстанавливаю сохранённое расписание.");
+                    await RefreshScheduledTasksAfterUpdateAsync();
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception ex) { LogService.Warn("Проверка расписания: " + ex.GetBaseException().Message); }
         }
     }
 
@@ -235,7 +259,8 @@ public partial class MainWindow : Window
             AppendJournal(persisted
                 ? "Вход выполнен. Токен сохранён в защищённом хранилище."
                 : "Вход выполнен, но токен не удалось сохранить — после перезапуска потребуется войти снова.");
-            await _seed.ResumeAsync(CancellationToken.None); // вдруг набор уже активен на сервере
+            if (_seed.IsRunning || GameProcessService.IsGameRunning())
+                await _seed.ResumeAsync(CancellationToken.None);
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
         {
@@ -247,9 +272,9 @@ public partial class MainWindow : Window
     private async Task LogoutAsync()
     {
         // Серверный stop должен уйти с ещё действующим Bearer-токеном.
-        await StopSeedAsync(forceServerStop: true);
+        await _seed.ContinueAsGuestAsync();
         ClearAuth();
-        AppendJournal("Вы вышли из аккаунта. Токен удалён.");
+        AppendJournal(_seed.IsRunning ? "Вы вышли из аккаунта. Набор продолжается в гостевом режиме." : "Вы вышли из аккаунта.");
     }
 
     private void ClearAuth()
@@ -267,7 +292,7 @@ public partial class MainWindow : Window
         VipLoginHint.Visibility = Visibility.Collapsed;
         SessionCard.Visibility = Visibility.Visible;
         TxtAccount.Text = DecodeJwtClaim(token, "username") ?? "игрок";
-        BtnStart.IsEnabled = true;
+        RefreshSeedUi();
     }
 
     private void ShowLoggedOut()
@@ -276,9 +301,9 @@ public partial class MainWindow : Window
         UserPanel.Visibility = Visibility.Collapsed;
         VipCard.Visibility = Visibility.Collapsed;
         VipLoginHint.Visibility = Visibility.Visible;
-        SessionCard.Visibility = Visibility.Collapsed;
+        SessionCard.Visibility = Visibility.Visible;
         TxtAuthProgress.Visibility = Visibility.Collapsed;
-        BtnStart.IsEnabled = false;
+        RefreshSeedUi();
     }
 
     // ─────────────────────────── Навигация (сайдбар) ───────────────────────────
@@ -473,7 +498,9 @@ public partial class MainWindow : Window
         catch (ApiException ex) when (ex.IsAuthError)
         {
             LogService.Warn("Запуск набора: сессия истекла — требуется повторный вход.");
-            AppendJournal("Сессия истекла — войдите заново.");
+            AppendJournal(_seed.IsRunning
+                ? "Сессия истекла — набор продолжается в гостевом режиме. Для бонусов войдите снова."
+                : "Сессия истекла. Гостевой набор доступен без входа.");
             ClearAuth();
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)
@@ -483,7 +510,7 @@ public partial class MainWindow : Window
             // Запуск по расписанию не должен умирать от одной временной ошибки
             // (502 от сервера, сеть ещё не поднялась после пробуждения ПК).
             if (scheduled && retryAttempt < MaxScheduledRetries)
-                _ = RetryScheduledStartAsync(retryAttempt + 1);
+                _ = RetryScheduledStartAsync(retryAttempt + 1, _scheduledStartGeneration);
         }
         finally
         {
@@ -496,9 +523,10 @@ public partial class MainWindow : Window
     /// (интервал 2 мин → покрываем ~10 минут нестабильности после пробуждения).</summary>
     private const int MaxScheduledRetries = 5;
 
-    private async Task RetryScheduledStartAsync(int attempt)
+    private async Task RetryScheduledStartAsync(int attempt, int generation)
     {
         await Task.Delay(TimeSpan.FromMinutes(2));
+        if (generation != _scheduledStartGeneration || !_settings.ScheduleEnabled) return;
         if (_seed.IsRunning || _seedStartInProgress) return; // уже запустился (ретрай/вручную)
         LogService.Info($"Повторный запуск набора по расписанию (попытка {attempt + 1} из {MaxScheduledRetries + 1})…");
         await StartSeedAsync(scheduled: true, retryAttempt: attempt);
@@ -506,6 +534,7 @@ public partial class MainWindow : Window
 
     private async Task StopSeedAsync(bool forceServerStop = false)
     {
+        _scheduledStartGeneration++;
         if (!_seed.IsRunning && !forceServerStop) return;
         BtnStop.IsEnabled = false;
         try
@@ -523,12 +552,14 @@ public partial class MainWindow : Window
     private void RefreshSeedUi()
     {
         var s = _seed.State;
+        TxtTimer.Visibility = _api.Token is null ? Visibility.Collapsed : Visibility.Visible;
+        TxtBonuses.Visibility = _api.Token is null ? Visibility.Collapsed : Visibility.Visible;
 
         BtnStart.Visibility = s.Phase is SeedPhase.Idle or SeedPhase.Completed
             ? Visibility.Visible : Visibility.Collapsed;
         BtnStop.Visibility = s.Phase is SeedPhase.Connecting or SeedPhase.OnTarget
             ? Visibility.Visible : Visibility.Collapsed;
-        BtnStart.IsEnabled = _api.Token is not null && !_seedStartInProgress && _windowOpen != false;
+        BtnStart.IsEnabled = !_seedStartInProgress && _windowOpen != false;
 
         TxtSeedState.Text = s.StatusText;
 
@@ -776,7 +807,9 @@ public partial class MainWindow : Window
                 {
                     InvokeUi(() =>
                     {
-                        AppendJournal("Сессия истекла — войдите заново.");
+                        AppendJournal(_seed.IsRunning
+                ? "Сессия истекла — набор продолжается в гостевом режиме. Для бонусов войдите снова."
+                : "Сессия истекла. Гостевой набор доступен без входа.");
                         ClearAuth();
                     });
                 }
@@ -905,7 +938,9 @@ public partial class MainWindow : Window
         }
         catch (ApiException ex) when (ex.IsAuthError)
         {
-            AppendJournal("Сессия истекла — войдите заново.");
+            AppendJournal(_seed.IsRunning
+                ? "Сессия истекла — набор продолжается в гостевом режиме. Для бонусов войдите снова."
+                : "Сессия истекла. Гостевой набор доступен без входа.");
             ClearAuth();
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException)

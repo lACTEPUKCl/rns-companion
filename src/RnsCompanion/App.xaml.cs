@@ -51,6 +51,20 @@ public partial class App : Application
         // если подмена активна — восстановить и выйти; иначе — мгновенный выход.
         if (e.Args.Any(a => a.Equals("/restore-if-swapped", StringComparison.OrdinalIgnoreCase)))
         {
+            try
+            {
+                var settings = new SettingsStore().Load();
+                if (settings.ScheduleEnabled && !SchedulerService.TaskExists())
+                {
+                    var days = settings.ScheduleEveryDay
+                        ? Enum.GetValues<DayOfWeek>().ToList()
+                        : settings.ScheduleDays.Where(d => Enum.IsDefined(typeof(DayOfWeek), d))
+                            .Select(d => (DayOfWeek)d).Distinct().ToList();
+                    if (days.Count > 0)
+                        SchedulerService.Register(days, settings.ScheduleTimeOfDay, settings.ScheduleWakeToRun);
+                }
+            }
+            catch (Exception ex) { LogService.Warn("RestoreGuard: восстановление расписания: " + ex.GetBaseException().Message); }
             if (ConfigSwapService.Instance.IsSwapActive)
             {
                 LogService.Info("RestoreGuard: обнаружена активная подмена при входе в систему.");
@@ -69,7 +83,7 @@ public partial class App : Application
             return;
         }
 
-        LogService.Info("Запуск приложения" + (e.Args.Length > 0 ? $" (режим: {DescribeArguments(e.Args)})" : ""));
+        LogService.Info("Запуск приложения v" + typeof(App).Assembly.GetName().Version?.ToString(3) + (e.Args.Length > 0 ? $" (режим: {DescribeArguments(e.Args)})" : ""));
 
         // Остатки самообновления: update-ok.txt — применилось, чистим недожатый
         // .new; update-failed.txt или .new без ok — установка не завершилась

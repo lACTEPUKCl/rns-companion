@@ -40,6 +40,9 @@ jobs:
       - name: Logic tests
         run: dotnet run --project tools/logic-test/logic-test.csproj -c Release
 
+      - name: Network recovery tests
+        run: dotnet run --project tools/network-test/network-test.csproj -c Release
+
       - name: Recovery tests
         run: dotnet run --project tools/recovery-test/recovery-test.csproj -c Release
 
